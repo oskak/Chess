@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chess Opening Repertoire Trainer</title>
+
+    <!-- jQuery (required by chessboard.js) -->
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+
+    <!-- chessboard.js -->
+    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+
+    <!-- chess.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+
+    <!-- App styles -->
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<!-- ==================== HEADER ==================== -->
+<header class="app-header">
+    <div class="app-title" id="btn-home">
+        <span class="icon">&#9822;</span>
+        <span>Repertoire Trainer</span>
+    </div>
+    <div class="header-actions">
+        <button class="btn btn-sm btn-secondary" id="btn-import">Import PGN</button>
+        <button class="btn btn-sm" id="btn-new-repertoire">+ New</button>
+    </div>
+</header>
+
+<main class="app-content">
+
+    <!-- ==================== HOME VIEW ==================== -->
+    <div class="view active" id="view-home">
+        <div class="home-header">
+            <h2>My Repertoires</h2>
+        </div>
+        <div id="repertoire-list">
+            <div class="empty-state">
+                <p>No repertoires yet.</p>
+                <p>Import a PGN file or create a new repertoire to get started.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== IMPORT VIEW ==================== -->
+    <div class="view" id="view-import">
+        <div class="import-container">
+            <h2>Import PGN</h2>
+
+            <div class="form-group">
+                <label for="import-name">Repertoire Name</label>
+                <input type="text" id="import-name" placeholder="e.g. Sicilian Najdorf (White)">
+            </div>
+
+            <div class="form-group">
+                <label for="import-color">I play as</label>
+                <select id="import-color">
+                    <option value="white">White</option>
+                    <option value="black">Black</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="pgn-file">PGN File</label>
+                <input type="file" id="pgn-file" accept=".pgn,.txt">
+            </div>
+
+            <div class="form-group">
+                <div class="or-divider">- or paste PGN text -</div>
+                <textarea id="pgn-text" placeholder="1. e4 e5 2. Nf3 Nc6 3. Bb5 (3. Bc4 Bc5) a6 4. Ba4 ..."></textarea>
+            </div>
+
+            <div id="import-progress" style="display:none">
+                <div class="progress-bar-container">
+                    <div class="progress-bar" style="width: 0%"></div>
+                </div>
+            </div>
+            <div id="import-status"></div>
+
+            <div class="import-actions">
+                <button class="btn" id="btn-do-import">Import</button>
+                <button class="btn btn-secondary" id="btn-cancel-import">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== EXPLORER VIEW ==================== -->
+    <div class="view" id="view-explorer">
+        <div class="explorer-header">
+            <h2 id="explorer-title">Explorer</h2>
+        </div>
+
+        <div class="board-layout">
+            <div class="board-container">
+                <div id="board" style="width: 100%"></div>
+                <div class="explorer-controls mt-1">
+                    <button class="btn btn-sm btn-secondary" id="btn-explorer-back" title="Undo (Left Arrow)">&#8592; Back</button>
+                    <button class="btn btn-sm btn-secondary" id="btn-explorer-reset">Reset</button>
+                    <button class="btn btn-sm btn-secondary" id="btn-explorer-flip" title="Flip board (F)">Flip</button>
+                    <button class="btn btn-sm" id="btn-explorer-train">Train</button>
+                    <button class="btn btn-sm btn-secondary" id="btn-explorer-home">Home</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <h3>Moves</h3>
+                    <div id="explorer-stats" class="stats-row"></div>
+                </div>
+                <div class="panel-body">
+                    <div id="explorer-moves"></div>
+                    <h4 class="mb-1" style="font-size: 0.85rem; color: var(--text-secondary);">Continuations</h4>
+                    <div id="explorer-children"></div>
+                    <div id="explorer-comment" class="mt-1"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== TRAINER VIEW ==================== -->
+    <div class="view" id="view-trainer">
+        <div class="trainer-header">
+            <h2 id="trainer-title">Training</h2>
+        </div>
+
+        <div class="board-layout">
+            <div class="board-container">
+                <div id="board-trainer-placeholder"></div>
+                <div class="trainer-controls mt-1">
+                    <button class="btn btn-sm btn-secondary" id="btn-trainer-skip">Skip</button>
+                    <button class="btn btn-sm btn-secondary" id="btn-trainer-flip" title="Flip board (F)">Flip</button>
+                    <button class="btn btn-sm btn-secondary" id="btn-hints" title="Show hints (H)">Hints</button>
+                    <button class="btn btn-sm btn-secondary" id="btn-trainer-restart">Restart</button>
+                    <button class="btn btn-sm btn-secondary" id="btn-trainer-home">Home</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <h3>Training Session</h3>
+                </div>
+                <div class="panel-body">
+                    <div class="trainer-settings">
+                        <div>
+                            <label for="train-mode">Mode:</label>
+                            <select id="train-mode">
+                                <option value="mix">Mix (Review + New)</option>
+                                <option value="review">Review Due</option>
+                                <option value="new">New Lines Only</option>
+                                <option value="all">All Lines</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="train-limit">Lines:</label>
+                            <input type="number" id="train-limit" value="20" min="1" max="500" style="width: 70px">
+                        </div>
+                    </div>
+                    <div id="trainer-progress"></div>
+                    <div id="trainer-moves" class="mt-1"></div>
+                    <div id="trainer-feedback" class="mt-1"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</main>
+
+<!-- App scripts (order matters) -->
+<script src="js/move-tree.js"></script>
+<script src="js/pgn-parser.js"></script>
+<script src="js/db.js"></script>
+<script src="js/trainer.js"></script>
+<script src="js/app.js"></script>
+
+</body>
+</html>

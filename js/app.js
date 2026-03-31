@@ -1,0 +1,857 @@
+/**
+ * Main Application - Chess Opening Repertoire Trainer
+ *
+ * Manages UI, board interaction, and coordinates all components.
+ */
+
+class App {
+    constructor() {
+        this.db = new RepertoireDB();
+        this.board = null;
+        this.chess = new Chess();
+        this.trainer = null;
+        this.currentTree = null;
+        this.currentNode = null;
+        this.boardOrientation = 'white';
+        this.view = 'home'; // home, explorer, trainer, import
+        this.explorerMoveStack = []; // For undo in explorer
+        this.highlightSquares = [];
+        this.autoPlayDelay = 400; // ms delay for opponent moves
+        this.showHints = false;
+        this.trainerLineHadError = false;
+    }
+
+    async init() {
+        this._initBoard();
+        this._bindEvents();
+        await this._loadRepertoireList();
+        this._showView('home');
+    }
+
+    // ===================== BOARD =====================
+
+    _initBoard() {
+        const config = {
+            draggable: true,
+            position: 'start',
+            orientation: 'white',
+            pieceTheme: 'https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/img/chesspieces/wikipedia/{piece}.png',
+            onDragStart: (source, piece, position, orientation) => this._onDragStart(source, piece, position, orientation),
+            onDrop: (source, target, piece, newPos, oldPos, orientation) => this._onDrop(source, target, piece),
+            onSnapEnd: () => this._onSnapEnd(),
+            onMouseoutSquare: () => this._clearHighlights(),
+            onMouseoverSquare: (square) => this._onHoverSquare(square)
+        };
+        this.board = Chessboard('board', config);
+
+        // Make board responsive
+        window.addEventListener('resize', () => {
+            if (this.board) this.board.resize();
+        });
+    }
+
+    _onDragStart(source, piece, position, orientation) {
+        if (this.chess.game_over()) return false;
+
+        // In explorer mode: allow any move
+        if (this.view === 'explorer') {
+            if ((this.chess.turn() === 'w' && piece.search(/^b/) !== -1) ||
+                (this.chess.turn() === 'b' && piece.search(/^w/) !== -1)) {
+                return false;
+            }
+            return true;
+        }
+
+        // In trainer mode: only allow player moves
+        if (this.view === 'trainer') {
+            if (!this.trainer || this.trainer.state !== 'playing') return false;
+            if (!this.trainer.isPlayerMove()) return false;
+
+            if ((this.chess.turn() === 'w' && piece.search(/^b/) !== -1) ||
+                (this.chess.turn() === 'b' && piece.search(/^w/) !== -1)) {
+                return false;
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    _onDrop(source, target, piece) {
+        // Check for promotion
+        let promotion = undefined;
+        const isPromotion = piece[1] === 'P' &&
+            ((piece[0] === 'w' && target[1] === '8') || (piece[0] === 'b' && target[1] === '1'));
+
+        if (isPromotion) {
+            promotion = this._askPromotion();
+        }
+
+        if (this.view === 'explorer') {
+            return this._onExplorerDrop(source, target, promotion);
+        }
+
+        if (this.view === 'trainer') {
+            return this._onTrainerDrop(source, target, promotion);
+        }
+
+        return 'snapback';
+    }
+
+    _onSnapEnd() {
+        this.board.position(this.chess.fen());
+    }
+
+    _onHoverSquare(square) {
+        if (this.view !== 'trainer' || !this.showHints) return;
+        if (!this.trainer || !this.trainer.isPlayerMove()) return;
+
+        // Show legal moves from this square
+        const moves = this.chess.moves({ square, verbose: true });
+        if (moves.length === 0) return;
+
+        this._highlightSquare(square, 'hint-source');
+        for (const move of moves) {
+            this._highlightSquare(move.to, 'hint-target');
+        }
+    }
+
+    _highlightSquare(square, className) {
+        const el = document.querySelector(`.square-${square}`);
+        if (el) {
+            el.classList.add(className);
+            this.highlightSquares.push({ el, className });
+        }
+    }
+
+    _clearHighlights() {
+        for (const { el, className } of this.highlightSquares) {
+            el.classList.remove(className);
+        }
+        this.highlightSquares = [];
+    }
+
+    _clearAllSquareEffects() {
+        document.querySelectorAll('.highlight-correct, .highlight-wrong, .highlight-last, .hint-source, .hint-target').forEach(el => {
+            el.classList.remove('highlight-correct', 'highlight-wrong', 'highlight-last', 'hint-source', 'hint-target');
+        });
+        this.highlightSquares = [];
+    }
+
+    _highlightMove(move, type) {
+        this._clearAllSquareEffects();
+        const fromEl = document.querySelector(`.square-${move.from}`);
+        const toEl = document.querySelector(`.square-${move.to}`);
+        if (fromEl) fromEl.classList.add(`highlight-${type}`);
+        if (toEl) toEl.classList.add(`highlight-${type}`);
+    }
+
+    _askPromotion() {
+        // Simple prompt for now
+        const choice = prompt('Promote to: Q (Queen), R (Rook), B (Bishop), N (Knight)', 'Q');
+        const map = { 'Q': 'q', 'R': 'r', 'B': 'b', 'N': 'n', 'q': 'q', 'r': 'r', 'b': 'b', 'n': 'n' };
+        return map[choice] || 'q';
+    }
+
+    // ===================== EXPLORER MODE =====================
+
+    _onExplorerDrop(source, target, promotion) {
+        const moveObj = { from: source, to: target };
+        if (promotion) moveObj.promotion = promotion;
+
+        const move = this.chess.move(moveObj);
+        if (!move) return 'snapback';
+
+        this.explorerMoveStack.push(move);
+
+        // Navigate tree
+        if (this.currentNode) {
+            const child = this.currentNode.getChild(move.san);
+            if (child) {
+                this.currentNode = child;
+            } else {
+                this.currentNode = null;
+            }
+        }
+
+        this._updateExplorerUI();
+        this._highlightMove(move, 'last');
+    }
+
+    _updateExplorerUI() {
+        const moveList = document.getElementById('explorer-moves');
+        const childList = document.getElementById('explorer-children');
+        const comment = document.getElementById('explorer-comment');
+
+        // Update move list
+        if (moveList) {
+            moveList.innerHTML = this._formatMoveHistory();
+        }
+
+        // Update available children
+        if (childList && this.currentNode) {
+            let html = '';
+            const children = [...this.currentNode.children.entries()]
+                .sort((a, b) => a[1].priority - b[1].priority);
+
+            for (const [san, child] of children) {
+                const nagStr = child.nags.map(n => PGNParser.NAG_REVERSE[n] || `$${n}`).join('');
+                const statsStr = child.stats.attempts > 0
+                    ? ` (${Math.round(child.stats.correct / child.stats.attempts * 100)}%)`
+                    : '';
+                html += `<div class="explorer-child" data-move="${san}">
+                    <span class="move-san">${san}${nagStr}</span>${statsStr}
+                    ${child.comment ? `<span class="move-comment">${child.comment}</span>` : ''}
+                </div>`;
+            }
+            childList.innerHTML = html || '<div class="no-moves">No continuations in repertoire</div>';
+
+            // Bind click events
+            childList.querySelectorAll('.explorer-child').forEach(el => {
+                el.addEventListener('click', () => {
+                    const san = el.dataset.move;
+                    this._explorerPlayMove(san);
+                });
+            });
+        }
+
+        // Update comment
+        if (comment && this.currentNode) {
+            comment.textContent = this.currentNode.comment || '';
+        }
+
+        this._updateExplorerStats();
+    }
+
+    _explorerPlayMove(san) {
+        const move = this.chess.move(san);
+        if (!move) return;
+
+        this.explorerMoveStack.push(move);
+        this.board.position(this.chess.fen());
+
+        if (this.currentNode) {
+            const child = this.currentNode.getChild(move.san);
+            if (child) this.currentNode = child;
+            else this.currentNode = null;
+        }
+
+        this._updateExplorerUI();
+        this._highlightMove(move, 'last');
+    }
+
+    _explorerUndo() {
+        if (this.explorerMoveStack.length === 0) return;
+
+        const move = this.chess.undo();
+        if (!move) return;
+
+        this.explorerMoveStack.pop();
+        this.board.position(this.chess.fen());
+
+        // Navigate back in tree
+        if (this.currentNode && this.currentNode.parent) {
+            this.currentNode = this.currentNode.parent;
+        } else {
+            // Recalculate from root
+            this.currentNode = this.currentTree ? this.currentTree.root : null;
+            for (const m of this.explorerMoveStack) {
+                if (this.currentNode) {
+                    this.currentNode = this.currentNode.getChild(m.san) || null;
+                }
+            }
+        }
+
+        this._clearAllSquareEffects();
+        this._updateExplorerUI();
+    }
+
+    _explorerReset() {
+        this.chess.reset();
+        this.explorerMoveStack = [];
+        this.currentNode = this.currentTree ? this.currentTree.root : null;
+        this.board.position('start');
+        this._clearAllSquareEffects();
+        this._updateExplorerUI();
+    }
+
+    _updateExplorerStats() {
+        const el = document.getElementById('explorer-stats');
+        if (!el || !this.currentTree) return;
+
+        const stats = this.currentTree.getStatsOverview();
+        el.innerHTML = `
+            <div class="stat"><span class="stat-value">${stats.totalNodes}</span><span class="stat-label">Positions</span></div>
+            <div class="stat"><span class="stat-value">${stats.totalLines}</span><span class="stat-label">Lines</span></div>
+            <div class="stat"><span class="stat-value">${stats.mastered}</span><span class="stat-label">Mastered</span></div>
+            <div class="stat"><span class="stat-value">${stats.due}</span><span class="stat-label">Due</span></div>
+        `;
+    }
+
+    _formatMoveHistory() {
+        const moves = this.chess.history();
+        let html = '';
+        for (let i = 0; i < moves.length; i++) {
+            if (i % 2 === 0) {
+                html += `<span class="move-number">${Math.floor(i / 2) + 1}.</span> `;
+            }
+            const isCurrentMove = i === moves.length - 1;
+            html += `<span class="move-text ${isCurrentMove ? 'current-move' : ''}">${moves[i]}</span> `;
+        }
+        return html || '<span class="no-moves">Starting position</span>';
+    }
+
+    // ===================== TRAINER MODE =====================
+
+    _onTrainerDrop(source, target, promotion) {
+        if (!this.trainer || !this.trainer.isPlayerMove()) return 'snapback';
+
+        const result = this.trainer.submitMove(source, target, promotion);
+
+        if (!result.valid) return 'snapback';
+
+        if (result.correct) {
+            this._highlightMove(result.move, 'correct');
+            this._updateTrainerUI();
+
+            if (result.isLineComplete) {
+                this._onTrainerLineComplete();
+            } else {
+                // Play opponent's response after delay
+                setTimeout(() => this._playOpponentMove(), this.autoPlayDelay);
+            }
+        } else {
+            // Wrong move
+            this.trainerLineHadError = true;
+            this._showTrainerFeedback(false, result);
+            return 'snapback';
+        }
+    }
+
+    _playOpponentMove() {
+        if (!this.trainer || this.trainer.isPlayerMove()) return;
+
+        const result = this.trainer.playOpponentMove();
+        if (!result) return;
+
+        this.board.position(this.chess.fen());
+        this._highlightMove(result.move, 'last');
+        this._updateTrainerUI();
+
+        if (result.isLineComplete) {
+            this._onTrainerLineComplete();
+        }
+    }
+
+    _onTrainerLineComplete() {
+        this.trainer.state = 'waiting';
+        const progress = this.trainer.getProgress();
+
+        const feedbackEl = document.getElementById('trainer-feedback');
+        if (feedbackEl) {
+            if (this.trainerLineHadError) {
+                feedbackEl.innerHTML = `<div class="feedback feedback-info">Line complete (with mistakes). <button id="btn-next-line" class="btn btn-sm">Next Line</button></div>`;
+            } else {
+                feedbackEl.innerHTML = `<div class="feedback feedback-success">Perfect! <button id="btn-next-line" class="btn btn-sm">Next Line</button></div>`;
+            }
+            const btn = document.getElementById('btn-next-line');
+            if (btn) btn.addEventListener('click', () => this._trainerNextLine());
+        }
+
+        this._updateTrainerProgress();
+    }
+
+    _trainerNextLine() {
+        if (!this.trainer) return;
+
+        this.trainerLineHadError = false;
+        const lineInfo = this.trainer.nextLine();
+
+        if (!lineInfo) {
+            this._showTrainerComplete();
+            return;
+        }
+
+        this.chess = this.trainer.chess;
+        this.board.position(this.chess.fen());
+        this._clearAllSquareEffects();
+
+        const feedbackEl = document.getElementById('trainer-feedback');
+        if (feedbackEl) feedbackEl.innerHTML = '';
+
+        this._updateTrainerUI();
+
+        // If opponent moves first
+        if (!this.trainer.isPlayerMove()) {
+            setTimeout(() => this._playOpponentMove(), this.autoPlayDelay);
+        }
+    }
+
+    _showTrainerFeedback(correct, result) {
+        const feedbackEl = document.getElementById('trainer-feedback');
+        if (!feedbackEl) return;
+
+        if (correct) {
+            feedbackEl.innerHTML = `<div class="feedback feedback-success">Correct!</div>`;
+        } else {
+            const correctMoves = result.correctMoves.join(', ');
+            feedbackEl.innerHTML = `
+                <div class="feedback feedback-wrong">
+                    <strong>${result.played}</strong> is not in the repertoire.
+                    Expected: <strong>${correctMoves}</strong>
+                    <div class="feedback-actions">
+                        <button id="btn-retry" class="btn btn-sm">Try Again</button>
+                        <button id="btn-show-move" class="btn btn-sm btn-secondary">Show Move</button>
+                    </div>
+                </div>`;
+
+            document.getElementById('btn-retry')?.addEventListener('click', () => {
+                feedbackEl.innerHTML = '<div class="feedback feedback-info">Try the correct move...</div>';
+            });
+
+            document.getElementById('btn-show-move')?.addEventListener('click', () => {
+                const r = this.trainer.playCorrectMove();
+                if (r) {
+                    this.board.position(this.chess.fen());
+                    this._highlightMove(r.move, 'last');
+                    this._updateTrainerUI();
+
+                    if (r.isLineComplete) {
+                        this._onTrainerLineComplete();
+                    } else {
+                        setTimeout(() => this._playOpponentMove(), this.autoPlayDelay);
+                    }
+                }
+            });
+        }
+    }
+
+    _showTrainerComplete() {
+        const progress = this.trainer.getProgress();
+        const container = document.getElementById('trainer-feedback');
+        if (container) {
+            const pct = progress.stats.total > 0
+                ? Math.round(progress.stats.correct / (progress.stats.correct + progress.stats.wrong) * 100) : 0;
+            container.innerHTML = `
+                <div class="session-complete">
+                    <h3>Session Complete!</h3>
+                    <div class="session-summary">
+                        <div class="stat"><span class="stat-value">${progress.stats.total}</span><span class="stat-label">Lines</span></div>
+                        <div class="stat"><span class="stat-value">${progress.stats.correct}</span><span class="stat-label">Correct</span></div>
+                        <div class="stat"><span class="stat-value">${progress.stats.wrong}</span><span class="stat-label">Wrong</span></div>
+                        <div class="stat"><span class="stat-value">${pct}%</span><span class="stat-label">Accuracy</span></div>
+                    </div>
+                    <button id="btn-train-again" class="btn">Train Again</button>
+                    <button id="btn-back-home" class="btn btn-secondary">Back</button>
+                </div>`;
+
+            document.getElementById('btn-train-again')?.addEventListener('click', () => {
+                this._startTraining();
+            });
+            document.getElementById('btn-back-home')?.addEventListener('click', () => {
+                this._saveCurrentRepertoire();
+                this._showView('home');
+            });
+        }
+    }
+
+    _updateTrainerUI() {
+        const moveList = document.getElementById('trainer-moves');
+        if (moveList) {
+            moveList.innerHTML = this._formatMoveHistory();
+        }
+        this._updateTrainerProgress();
+    }
+
+    _updateTrainerProgress() {
+        const progress = this.trainer.getProgress();
+        const progressEl = document.getElementById('trainer-progress');
+        if (progressEl) {
+            progressEl.innerHTML = `
+                <div class="progress-bar-container">
+                    <div class="progress-bar" style="width: ${progress.percent}%"></div>
+                </div>
+                <div class="progress-text">
+                    ${progress.completed} / ${progress.total} lines
+                    | Correct: ${progress.stats.correct} | Wrong: ${progress.stats.wrong}
+                </div>`;
+        }
+    }
+
+    // ===================== VIEWS =====================
+
+    _showView(viewName) {
+        this.view = viewName;
+        document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+        const viewEl = document.getElementById(`view-${viewName}`);
+        if (viewEl) viewEl.classList.add('active');
+
+        if (viewName === 'home') {
+            this._loadRepertoireList();
+        }
+    }
+
+    async _loadRepertoireList() {
+        const list = await this.db.listRepertoires();
+        const container = document.getElementById('repertoire-list');
+        if (!container) return;
+
+        if (list.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <p>No repertoires yet.</p>
+                    <p>Import a PGN file or create a new repertoire to get started.</p>
+                </div>`;
+            return;
+        }
+
+        let html = '';
+        for (const rep of list) {
+            const colorIcon = rep.color === 'white' ? '&#9812;' : '&#9818;';
+            const date = new Date(rep.updatedAt).toLocaleDateString();
+            html += `
+                <div class="repertoire-card" data-id="${rep.id}">
+                    <div class="rep-color">${colorIcon}</div>
+                    <div class="rep-info">
+                        <div class="rep-name">${this._escapeHtml(rep.name)}</div>
+                        <div class="rep-date">Updated: ${date}</div>
+                    </div>
+                    <div class="rep-actions">
+                        <button class="btn btn-sm btn-train" data-id="${rep.id}" title="Train">&#9654;</button>
+                        <button class="btn btn-sm btn-explore" data-id="${rep.id}" title="Explore">&#128270;</button>
+                        <button class="btn btn-sm btn-export" data-id="${rep.id}" title="Export PGN">&#128190;</button>
+                        <button class="btn btn-sm btn-delete btn-danger" data-id="${rep.id}" title="Delete">&#10005;</button>
+                    </div>
+                </div>`;
+        }
+        container.innerHTML = html;
+
+        // Bind events
+        container.querySelectorAll('.btn-train').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._openRepertoire(btn.dataset.id, 'trainer');
+            });
+        });
+        container.querySelectorAll('.btn-explore').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._openRepertoire(btn.dataset.id, 'explorer');
+            });
+        });
+        container.querySelectorAll('.btn-export').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._exportRepertoire(btn.dataset.id);
+            });
+        });
+        container.querySelectorAll('.btn-delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._deleteRepertoire(btn.dataset.id);
+            });
+        });
+    }
+
+    async _openRepertoire(id, mode) {
+        const tree = await this.db.loadRepertoire(id);
+        if (!tree) {
+            alert('Repertoire not found');
+            return;
+        }
+
+        this.currentTree = tree;
+        this.currentNode = tree.root;
+        this.boardOrientation = tree.color;
+        this.board.orientation(this.boardOrientation);
+
+        this.chess.reset();
+        this.board.position('start');
+        this.explorerMoveStack = [];
+        this._clearAllSquareEffects();
+
+        if (mode === 'explorer') {
+            this._showView('explorer');
+            document.getElementById('explorer-title').textContent = tree.name;
+            this._updateExplorerUI();
+        } else if (mode === 'trainer') {
+            this._showView('trainer');
+            document.getElementById('trainer-title').textContent = tree.name;
+            this._startTraining();
+        }
+    }
+
+    _startTraining(options = {}) {
+        if (!this.currentTree) return;
+
+        this.trainer = new Trainer(this.currentTree);
+        this.chess = this.trainer.chess;
+        this.trainerLineHadError = false;
+
+        const mode = document.getElementById('train-mode')?.value || 'mix';
+        const limit = parseInt(document.getElementById('train-limit')?.value || '20');
+
+        const sessionInfo = this.trainer.startSession({
+            mode,
+            lineLimit: limit,
+            ...options
+        });
+
+        if (sessionInfo.state === 'finished') {
+            const feedbackEl = document.getElementById('trainer-feedback');
+            if (feedbackEl) {
+                feedbackEl.innerHTML = '<div class="feedback feedback-info">No lines to review! All caught up.</div>';
+            }
+            return;
+        }
+
+        this._trainerNextLine();
+    }
+
+    async _saveCurrentRepertoire() {
+        if (!this.currentTree) return;
+        try {
+            await this.db.saveRepertoire(this.currentTree);
+        } catch (e) {
+            console.error('Failed to save:', e);
+        }
+    }
+
+    async _exportRepertoire(id) {
+        try {
+            const pgn = await this.db.exportRepertoire(id);
+            const blob = new Blob([pgn], { type: 'application/x-chess-pgn' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'repertoire.pgn';
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            alert('Export failed: ' + e.message);
+        }
+    }
+
+    async _deleteRepertoire(id) {
+        if (!confirm('Delete this repertoire? This cannot be undone.')) return;
+        try {
+            await this.db.deleteRepertoire(id);
+            await this._loadRepertoireList();
+        } catch (e) {
+            alert('Delete failed: ' + e.message);
+        }
+    }
+
+    // ===================== IMPORT =====================
+
+    _showImportDialog() {
+        this._showView('import');
+    }
+
+    async _handleImport() {
+        const fileInput = document.getElementById('pgn-file');
+        const textInput = document.getElementById('pgn-text');
+        const nameInput = document.getElementById('import-name');
+        const colorSelect = document.getElementById('import-color');
+        const progressEl = document.getElementById('import-progress');
+        const statusEl = document.getElementById('import-status');
+
+        let pgnText = '';
+
+        if (fileInput.files.length > 0) {
+            const file = fileInput.files[0];
+            statusEl.textContent = `Reading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)...`;
+            pgnText = await file.text();
+        } else if (textInput.value.trim()) {
+            pgnText = textInput.value.trim();
+        } else {
+            alert('Please select a PGN file or paste PGN text.');
+            return;
+        }
+
+        const name = nameInput.value.trim() || 'Imported Repertoire';
+        const color = colorSelect.value;
+
+        statusEl.textContent = 'Parsing PGN...';
+        progressEl.style.display = 'block';
+        progressEl.querySelector('.progress-bar').style.width = '0%';
+
+        try {
+            const trees = await PGNParser.parseAsync(pgnText, {
+                repertoireName: name,
+                color: color,
+                mergeGames: true,
+                onProgress: (pct) => {
+                    progressEl.querySelector('.progress-bar').style.width = pct + '%';
+                    statusEl.textContent = `Parsing... ${pct}%`;
+                }
+            });
+
+            const tree = trees[0];
+            const nodeCount = tree.countNodes();
+            const lineCount = tree.countLines();
+
+            statusEl.textContent = `Saving: ${nodeCount} positions, ${lineCount} lines...`;
+
+            await this.db.saveRepertoire(tree);
+
+            statusEl.textContent = `Imported! ${nodeCount} positions, ${lineCount} lines.`;
+            progressEl.querySelector('.progress-bar').style.width = '100%';
+
+            // Clear inputs
+            fileInput.value = '';
+            textInput.value = '';
+            nameInput.value = '';
+
+            setTimeout(() => {
+                this._showView('home');
+                progressEl.style.display = 'none';
+            }, 1500);
+
+        } catch (e) {
+            statusEl.textContent = 'Error: ' + e.message;
+            console.error('Import error:', e);
+        }
+    }
+
+    // ===================== EVENTS =====================
+
+    _bindEvents() {
+        // Navigation
+        document.getElementById('btn-home')?.addEventListener('click', () => {
+            this._saveCurrentRepertoire();
+            this._showView('home');
+        });
+
+        document.getElementById('btn-import')?.addEventListener('click', () => {
+            this._showImportDialog();
+        });
+
+        document.getElementById('btn-new-repertoire')?.addEventListener('click', () => {
+            this._createNewRepertoire();
+        });
+
+        // Import
+        document.getElementById('btn-do-import')?.addEventListener('click', () => {
+            this._handleImport();
+        });
+
+        document.getElementById('btn-cancel-import')?.addEventListener('click', () => {
+            this._showView('home');
+        });
+
+        // Explorer controls
+        document.getElementById('btn-explorer-back')?.addEventListener('click', () => {
+            this._explorerUndo();
+        });
+
+        document.getElementById('btn-explorer-reset')?.addEventListener('click', () => {
+            this._explorerReset();
+        });
+
+        document.getElementById('btn-explorer-flip')?.addEventListener('click', () => {
+            this.board.flip();
+        });
+
+        document.getElementById('btn-explorer-home')?.addEventListener('click', () => {
+            this._saveCurrentRepertoire();
+            this._showView('home');
+        });
+
+        document.getElementById('btn-explorer-train')?.addEventListener('click', () => {
+            this._showView('trainer');
+            document.getElementById('trainer-title').textContent = this.currentTree.name;
+            this._startTraining();
+        });
+
+        // Trainer controls
+        document.getElementById('btn-trainer-skip')?.addEventListener('click', () => {
+            if (this.trainer) {
+                this.trainerLineHadError = false;
+                const line = this.trainer.skipLine();
+                if (line) {
+                    this.chess = this.trainer.chess;
+                    this.board.position(this.chess.fen());
+                    this._clearAllSquareEffects();
+                    this._updateTrainerUI();
+                    if (!this.trainer.isPlayerMove()) {
+                        setTimeout(() => this._playOpponentMove(), this.autoPlayDelay);
+                    }
+                } else {
+                    this._showTrainerComplete();
+                }
+            }
+        });
+
+        document.getElementById('btn-trainer-flip')?.addEventListener('click', () => {
+            this.board.flip();
+        });
+
+        document.getElementById('btn-trainer-home')?.addEventListener('click', () => {
+            this._saveCurrentRepertoire();
+            this._showView('home');
+        });
+
+        document.getElementById('btn-trainer-restart')?.addEventListener('click', () => {
+            this._startTraining();
+        });
+
+        document.getElementById('btn-hints')?.addEventListener('click', () => {
+            this.showHints = !this.showHints;
+            const btn = document.getElementById('btn-hints');
+            btn.classList.toggle('active', this.showHints);
+        });
+
+        // Train settings
+        document.getElementById('train-mode')?.addEventListener('change', () => {
+            this._startTraining();
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+            switch (e.key) {
+                case 'ArrowLeft':
+                    if (this.view === 'explorer') this._explorerUndo();
+                    break;
+                case 'f':
+                    this.board.flip();
+                    break;
+                case 'h':
+                    if (this.view === 'trainer') {
+                        this.showHints = !this.showHints;
+                        document.getElementById('btn-hints')?.classList.toggle('active', this.showHints);
+                    }
+                    break;
+            }
+        });
+    }
+
+    async _createNewRepertoire() {
+        const name = prompt('Repertoire name:', 'My Repertoire');
+        if (!name) return;
+
+        const color = prompt('Color? (white/black):', 'white');
+        if (color !== 'white' && color !== 'black') {
+            alert('Please enter "white" or "black"');
+            return;
+        }
+
+        const tree = new MoveTree(name, color);
+        await this.db.saveRepertoire(tree);
+        await this._openRepertoire(tree.id, 'explorer');
+    }
+
+    _escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+}
+
+// Initialize app when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    window.app = new App();
+    window.app.init().catch(console.error);
+});
