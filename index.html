@@ -27,6 +27,7 @@
         <span>Repertoire Trainer</span>
     </div>
     <div class="header-actions">
+        <button class="btn btn-sm btn-secondary btn-sound" id="btn-sound" title="Toggle sounds">&#9835;</button>
         <button class="btn btn-sm btn-secondary" id="btn-import">Import PGN</button>
         <button class="btn btn-sm" id="btn-new-repertoire">+ New</button>
     </div>
@@ -75,12 +76,15 @@
                 <textarea id="pgn-text" placeholder="1. e4 e5 2. Nf3 Nc6 3. Bb5 (3. Bc4 Bc5) a6 4. Ba4 ..."></textarea>
             </div>
 
+            <div id="import-language-info"></div>
+
             <div id="import-progress" style="display:none">
                 <div class="progress-bar-container">
                     <div class="progress-bar" style="width: 0%"></div>
                 </div>
             </div>
             <div id="import-status"></div>
+            <div id="import-stats" class="import-stats" style="display:none"></div>
 
             <div class="import-actions">
                 <button class="btn" id="btn-do-import">Import</button>
@@ -117,6 +121,7 @@
                     <h4 class="mb-1" style="font-size: 0.85rem; color: var(--text-secondary);">Continuations</h4>
                     <div id="explorer-children"></div>
                     <div id="explorer-comment" class="mt-1"></div>
+                    <div id="explorer-transposition" class="mt-1"></div>
                 </div>
             </div>
         </div>
@@ -175,6 +180,7 @@
 <script src="js/pgn-parser.js"></script>
 <script src="js/db.js"></script>
 <script src="js/trainer.js"></script>
+<script src="js/sounds.js"></script>
 <script src="js/app.js"></script>
 
 </body>

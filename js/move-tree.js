@@ -4,6 +4,8 @@
  * Efficiently stores hundreds of thousands of variations using shared prefixes.
  * Each node represents a position reached after a move, with children being
  * possible continuations.
+ *
+ * Includes transposition detection via FEN position indexing.
  */
 
 class MoveTreeNode {
@@ -11,9 +13,11 @@ class MoveTreeNode {
         this.move = move;           // SAN notation (e.g., "e4", "Nf3")
         this.children = new Map();  // SAN -> MoveTreeNode
         this.parent = parent;       // Reference to parent node
-        this.comment = '';          // Annotation text
+        this.comment = '';          // Annotation text (UTF-8, any language)
         this.nags = [];             // Numeric Annotation Glyphs [!, ?, !!, etc.]
         this.priority = 0;          // 0 = mainline, 1+ = alternative
+        this.fen = null;            // Position FEN (first 4 fields - no counters)
+        this.isTransposition = false; // True if this position is reachable via multiple paths
 
         // Training stats (SM-2 spaced repetition)
         this.stats = {
@@ -88,6 +92,17 @@ class MoveTreeNode {
     isWhiteMove() {
         return this.getDepth() % 2 === 1;
     }
+
+    /**
+     * Get all other nodes that reach the same position (transpositions).
+     * Requires tree's positionIndex.
+     */
+    getTranspositions(positionIndex) {
+        if (!this.fen || !positionIndex) return [];
+        const nodes = positionIndex.get(this.fen);
+        if (!nodes) return [];
+        return nodes.filter(n => n !== this);
+    }
 }
 
 
@@ -99,7 +114,10 @@ class MoveTree {
         this.id = MoveTree.generateId();
         this.createdAt = Date.now();
         this.updatedAt = Date.now();
-        this.metadata = {};       // PGN headers, etc.
+        this.metadata = {};       // PGN headers, language info, etc.
+
+        // Position index for transposition detection: FEN -> [MoveTreeNode]
+        this.positionIndex = new Map();
 
         // Cached stats
         this._nodeCount = 0;
@@ -136,11 +154,60 @@ class MoveTree {
         return node;
     }
 
+    /**
+     * Build the position index from all nodes in the tree.
+     * Call after deserialization or manual tree construction.
+     */
+    rebuildPositionIndex() {
+        this.positionIndex.clear();
+        this._traverse(this.root, (node) => {
+            if (node.fen) {
+                if (!this.positionIndex.has(node.fen)) {
+                    this.positionIndex.set(node.fen, []);
+                }
+                this.positionIndex.get(node.fen).push(node);
+                if (this.positionIndex.get(node.fen).length > 1) {
+                    for (const n of this.positionIndex.get(node.fen)) {
+                        n.isTransposition = true;
+                    }
+                }
+            }
+        });
+    }
+
+    /**
+     * Get count of unique transpositions in the tree.
+     */
+    countTranspositions() {
+        let count = 0;
+        for (const [, nodes] of this.positionIndex) {
+            if (nodes.length > 1) count++;
+        }
+        return count;
+    }
+
+    /**
+     * Find all transposition groups (positions reachable by multiple paths).
+     */
+    getTranspositionGroups() {
+        const groups = [];
+        for (const [fen, nodes] of this.positionIndex) {
+            if (nodes.length > 1) {
+                groups.push({
+                    fen,
+                    paths: nodes.map(n => n.getPath()),
+                    nodeCount: nodes.length
+                });
+            }
+        }
+        return groups;
+    }
+
     countNodes() {
         if (!this._dirty) return this._nodeCount;
         let count = 0;
         this._traverse(this.root, () => count++);
-        this._nodeCount = count - 1; // exclude root
+        this._nodeCount = count - 1;
         return this._nodeCount;
     }
 
@@ -187,14 +254,11 @@ class MoveTree {
         const lines = [];
         this._collectTrainingLines(this.root, [], lines, now);
 
-        // Sort by priority: due for review first, then new lines
         lines.sort((a, b) => {
             const aNode = a.node;
             const bNode = b.node;
-            // Never reviewed - high priority
             if (!aNode.stats.lastReviewed && bNode.stats.lastReviewed) return -1;
             if (aNode.stats.lastReviewed && !bNode.stats.lastReviewed) return 1;
-            // Due for review
             if (aNode.stats.nextReview && bNode.stats.nextReview) {
                 return aNode.stats.nextReview - bNode.stats.nextReview;
             }
@@ -228,7 +292,7 @@ class MoveTree {
         let totalNodes = 0;
         let totalLines = 0;
         let reviewed = 0;
-        let mastered = 0; // streak >= 5
+        let mastered = 0;
         let due = 0;
         const now = Date.now();
 
@@ -245,7 +309,9 @@ class MoveTree {
             }
         });
 
-        return { totalNodes, totalLines, reviewed, mastered, due };
+        const transpositions = this.countTranspositions();
+
+        return { totalNodes, totalLines, reviewed, mastered, due, transpositions };
     }
 
     _traverse(node, callback) {
@@ -255,10 +321,10 @@ class MoveTree {
         }
     }
 
-    // Merge another tree into this one (for importing additional PGNs)
     merge(otherTree) {
         this._mergeNodes(this.root, otherTree.root);
         this._dirty = true;
+        this.rebuildPositionIndex();
     }
 
     _mergeNodes(target, source) {
@@ -267,12 +333,14 @@ class MoveTree {
             if (!targetChild) {
                 targetChild = target.addChild(moveSan);
             }
-            // Merge comments (keep existing if present)
             if (sourceChild.comment && !targetChild.comment) {
                 targetChild.comment = sourceChild.comment;
             }
             if (sourceChild.nags.length > 0 && targetChild.nags.length === 0) {
                 targetChild.nags = [...sourceChild.nags];
+            }
+            if (sourceChild.fen) {
+                targetChild.fen = sourceChild.fen;
             }
             this._mergeNodes(targetChild, sourceChild);
         }
@@ -297,6 +365,8 @@ class MoveTree {
         if (node.comment) obj.a = node.comment;
         if (node.nags.length > 0) obj.n = node.nags;
         if (node.priority > 0) obj.p = node.priority;
+        if (node.fen) obj.f = node.fen;
+        if (node.isTransposition) obj.t = 1;
         if (node.stats.attempts > 0) {
             obj.s = [
                 node.stats.attempts,
@@ -325,6 +395,7 @@ class MoveTree {
         tree.metadata = data.metadata || {};
         tree._deserializeNode(tree.root, data.tree);
         tree._dirty = true;
+        tree.rebuildPositionIndex();
         return tree;
     }
 
@@ -332,6 +403,8 @@ class MoveTree {
         if (data.a) node.comment = data.a;
         if (data.n) node.nags = data.n;
         if (data.p !== undefined) node.priority = data.p;
+        if (data.f) node.fen = data.f;
+        if (data.t) node.isTransposition = true;
         if (data.s) {
             node.stats = {
                 attempts: data.s[0],
@@ -353,6 +426,5 @@ class MoveTree {
     }
 }
 
-// Export for use in other files
 window.MoveTree = MoveTree;
 window.MoveTreeNode = MoveTreeNode;

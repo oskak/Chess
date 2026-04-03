@@ -603,6 +603,111 @@ body {
     border-radius: 50%;
 }
 
+/* ===================== TRANSPOSITIONS ===================== */
+.transposition-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: rgba(255, 167, 38, 0.15);
+    border: 1px solid var(--warning);
+    color: var(--warning);
+    font-size: 0.7rem;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+}
+
+.transposition-badge::before {
+    content: '\21C4';  /* ⇄ arrows */
+    font-size: 0.8rem;
+}
+
+.transposition-info {
+    background: rgba(255, 167, 38, 0.08);
+    border: 1px solid rgba(255, 167, 38, 0.3);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    margin-top: 8px;
+    font-size: 0.8rem;
+    color: var(--warning);
+}
+
+.transposition-info .trans-title {
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.transposition-info .trans-path {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    margin-top: 2px;
+    font-family: 'Courier New', monospace;
+}
+
+.explorer-child .transposition-badge {
+    margin-left: auto;
+}
+
+/* ===================== LANGUAGE BADGE ===================== */
+.language-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(79, 195, 247, 0.12);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 0.75rem;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 500;
+}
+
+#import-language-info {
+    margin-top: 8px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+/* ===================== SOUND TOGGLE ===================== */
+.btn-sound {
+    position: relative;
+}
+
+.btn-sound.muted {
+    opacity: 0.5;
+}
+
+.btn-sound.muted::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 20%;
+    right: 20%;
+    height: 2px;
+    background: var(--error);
+    transform: rotate(-45deg);
+}
+
+/* ===================== WORKER PROGRESS ===================== */
+.import-stats {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.import-stats .stat-item {
+    display: flex;
+    gap: 4px;
+}
+
+.import-stats .stat-item strong {
+    color: var(--accent);
+}
+
 /* ===================== SCROLLBAR ===================== */
 ::-webkit-scrollbar {
     width: 8px;

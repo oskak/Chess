@@ -2,6 +2,8 @@
  * Main Application - Chess Opening Repertoire Trainer
  *
  * Manages UI, board interaction, and coordinates all components.
+ * Includes: sound effects, transposition detection UI, multi-language PGN support,
+ * Web Worker for massive file parsing.
  */
 
 class App {
@@ -19,6 +21,8 @@ class App {
         this.autoPlayDelay = 400; // ms delay for opponent moves
         this.showHints = false;
         this.trainerLineHadError = false;
+        this.sounds = new SoundEngine();
+        this.pgnWorker = null;
     }
 
     async init() {
@@ -162,6 +166,13 @@ class App {
         const move = this.chess.move(moveObj);
         if (!move) return 'snapback';
 
+        // Play sound
+        if (move.captured) {
+            this.sounds.playCapture();
+        } else {
+            this.sounds.playMove();
+        }
+
         this.explorerMoveStack.push(move);
 
         // Navigate tree
@@ -169,6 +180,10 @@ class App {
             const child = this.currentNode.getChild(move.san);
             if (child) {
                 this.currentNode = child;
+                // Transposition notification
+                if (child.isTransposition) {
+                    this.sounds.playTransposition();
+                }
             } else {
                 this.currentNode = null;
             }
@@ -199,9 +214,11 @@ class App {
                 const statsStr = child.stats.attempts > 0
                     ? ` (${Math.round(child.stats.correct / child.stats.attempts * 100)}%)`
                     : '';
+                const transStr = child.isTransposition ? '<span class="transposition-badge">TRANS</span>' : '';
                 html += `<div class="explorer-child" data-move="${san}">
                     <span class="move-san">${san}${nagStr}</span>${statsStr}
                     ${child.comment ? `<span class="move-comment">${child.comment}</span>` : ''}
+                    ${transStr}
                 </div>`;
             }
             childList.innerHTML = html || '<div class="no-moves">No continuations in repertoire</div>';
@@ -219,6 +236,9 @@ class App {
         if (comment && this.currentNode) {
             comment.textContent = this.currentNode.comment || '';
         }
+
+        // Update transposition info
+        this._updateTranspositionInfo();
 
         this._updateExplorerStats();
     }
@@ -283,9 +303,43 @@ class App {
         el.innerHTML = `
             <div class="stat"><span class="stat-value">${stats.totalNodes}</span><span class="stat-label">Positions</span></div>
             <div class="stat"><span class="stat-value">${stats.totalLines}</span><span class="stat-label">Lines</span></div>
-            <div class="stat"><span class="stat-value">${stats.mastered}</span><span class="stat-label">Mastered</span></div>
+            <div class="stat"><span class="stat-value">${stats.transpositions || 0}</span><span class="stat-label">Transpositions</span></div>
             <div class="stat"><span class="stat-value">${stats.due}</span><span class="stat-label">Due</span></div>
         `;
+    }
+
+    _updateTranspositionInfo() {
+        const el = document.getElementById('explorer-transposition');
+        if (!el) return;
+
+        if (!this.currentNode || !this.currentNode.isTransposition || !this.currentTree) {
+            el.innerHTML = '';
+            return;
+        }
+
+        const transpositions = this.currentNode.getTranspositions(this.currentTree.positionIndex);
+        if (transpositions.length === 0) {
+            el.innerHTML = '';
+            return;
+        }
+
+        let html = `<div class="transposition-info">
+            <div class="trans-title">&#8644; Transposition (${transpositions.length + 1} paths reach this position)</div>`;
+
+        for (const other of transpositions.slice(0, 5)) {
+            const path = other.getPath();
+            let pathStr = '';
+            for (let i = 0; i < path.length; i++) {
+                if (i % 2 === 0) pathStr += `${Math.floor(i / 2) + 1}. `;
+                pathStr += path[i] + ' ';
+            }
+            html += `<div class="trans-path">${pathStr.trim()}</div>`;
+        }
+        if (transpositions.length > 5) {
+            html += `<div class="trans-path">...and ${transpositions.length - 5} more</div>`;
+        }
+        html += '</div>';
+        el.innerHTML = html;
     }
 
     _formatMoveHistory() {
@@ -311,6 +365,7 @@ class App {
         if (!result.valid) return 'snapback';
 
         if (result.correct) {
+            this.sounds.playCorrect();
             this._highlightMove(result.move, 'correct');
             this._updateTrainerUI();
 
@@ -322,6 +377,7 @@ class App {
             }
         } else {
             // Wrong move
+            this.sounds.playError();
             this.trainerLineHadError = true;
             this._showTrainerFeedback(false, result);
             return 'snapback';
@@ -333,6 +389,12 @@ class App {
 
         const result = this.trainer.playOpponentMove();
         if (!result) return;
+
+        if (result.move.captured) {
+            this.sounds.playCapture();
+        } else {
+            this.sounds.playMove();
+        }
 
         this.board.position(this.chess.fen());
         this._highlightMove(result.move, 'last');
@@ -350,8 +412,10 @@ class App {
         const feedbackEl = document.getElementById('trainer-feedback');
         if (feedbackEl) {
             if (this.trainerLineHadError) {
+                this.sounds.playMove();
                 feedbackEl.innerHTML = `<div class="feedback feedback-info">Line complete (with mistakes). <button id="btn-next-line" class="btn btn-sm">Next Line</button></div>`;
             } else {
+                this.sounds.playSuccess();
                 feedbackEl.innerHTML = `<div class="feedback feedback-success">Perfect! <button id="btn-next-line" class="btn btn-sm">Next Line</button></div>`;
             }
             const btn = document.getElementById('btn-next-line');
@@ -672,33 +736,56 @@ class App {
         const name = nameInput.value.trim() || 'Imported Repertoire';
         const color = colorSelect.value;
 
+        // Detect language first
+        const langInfo = document.getElementById('import-language-info');
+        const statsDiv = document.getElementById('import-stats');
+        const detectedLang = PGNParser.detectLanguage(pgnText.substring(0, 5000));
+        const langName = PGNParser.getLanguageName(detectedLang);
+
+        if (langInfo) {
+            langInfo.innerHTML = detectedLang !== 'en'
+                ? `<span class="language-badge">Detected notation: ${langName}</span>`
+                : `<span class="language-badge">Notation: ${langName}</span>`;
+        }
+
         statusEl.textContent = 'Parsing PGN...';
         progressEl.style.display = 'block';
         progressEl.querySelector('.progress-bar').style.width = '0%';
 
         try {
-            const trees = await PGNParser.parseAsync(pgnText, {
+            const result = await PGNParser.parseAsync(pgnText, {
                 repertoireName: name,
                 color: color,
                 mergeGames: true,
+                language: detectedLang,
                 onProgress: (pct) => {
                     progressEl.querySelector('.progress-bar').style.width = pct + '%';
-                    statusEl.textContent = `Parsing... ${pct}%`;
+                    statusEl.textContent = `Parsing... ${pct}% (${langName})`;
                 }
             });
 
-            const tree = trees[0];
+            const tree = result.trees[0];
             const nodeCount = tree.countNodes();
             const lineCount = tree.countLines();
+            const transCount = tree.countTranspositions();
 
             statusEl.textContent = `Saving: ${nodeCount} positions, ${lineCount} lines...`;
 
             await this.db.saveRepertoire(tree);
 
-            statusEl.textContent = `Imported! ${nodeCount} positions, ${lineCount} lines.`;
+            statusEl.textContent = `Imported successfully!`;
             progressEl.querySelector('.progress-bar').style.width = '100%';
 
-            // Clear inputs
+            if (statsDiv) {
+                statsDiv.style.display = 'flex';
+                statsDiv.innerHTML = `
+                    <span class="stat-item"><strong>${nodeCount}</strong> positions</span>
+                    <span class="stat-item"><strong>${lineCount}</strong> lines</span>
+                    <span class="stat-item"><strong>${transCount}</strong> transpositions</span>
+                    <span class="stat-item">Notation: <strong>${langName}</strong></span>
+                `;
+            }
+
             fileInput.value = '';
             textInput.value = '';
             nameInput.value = '';
@@ -706,7 +793,9 @@ class App {
             setTimeout(() => {
                 this._showView('home');
                 progressEl.style.display = 'none';
-            }, 1500);
+                if (statsDiv) statsDiv.style.display = 'none';
+                if (langInfo) langInfo.innerHTML = '';
+            }, 2500);
 
         } catch (e) {
             statusEl.textContent = 'Error: ' + e.message;
@@ -802,6 +891,14 @@ class App {
             btn.classList.toggle('active', this.showHints);
         });
 
+        // Sound toggle
+        document.getElementById('btn-sound')?.addEventListener('click', () => {
+            const enabled = this.sounds.toggle();
+            const btn = document.getElementById('btn-sound');
+            btn.classList.toggle('muted', !enabled);
+            btn.title = enabled ? 'Sounds ON' : 'Sounds OFF';
+        });
+
         // Train settings
         document.getElementById('train-mode')?.addEventListener('change', () => {
             this._startTraining();
@@ -824,6 +921,15 @@ class App {
                         document.getElementById('btn-hints')?.classList.toggle('active', this.showHints);
                     }
                     break;
+                case 'm': {
+                    const enabled = this.sounds.toggle();
+                    const btn = document.getElementById('btn-sound');
+                    if (btn) {
+                        btn.classList.toggle('muted', !enabled);
+                        btn.title = enabled ? 'Sounds ON' : 'Sounds OFF';
+                    }
+                    break;
+                }
             }
         });
     }
