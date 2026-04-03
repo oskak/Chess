@@ -197,6 +197,36 @@ body {
     gap: 6px;
 }
 
+.home-actions-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.btn-restore {
+    cursor: pointer;
+}
+
+#restore-status {
+    margin-bottom: 12px;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 0.85rem;
+}
+
+#restore-status.restore-success {
+    background: rgba(102, 187, 106, 0.12);
+    border: 1px solid var(--success);
+    color: var(--success);
+}
+
+#restore-status.restore-error {
+    background: rgba(239, 83, 80, 0.12);
+    border: 1px solid var(--error);
+    color: var(--error);
+}
+
 .empty-state {
     text-align: center;
     padding: 60px 20px;

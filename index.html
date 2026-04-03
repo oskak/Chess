@@ -27,7 +27,8 @@
         <span>Repertoire Trainer</span>
     </div>
     <div class="header-actions">
-        <button class="btn btn-sm btn-secondary btn-sound" id="btn-sound" title="Toggle sounds">&#9835;</button>
+        <button class="btn btn-sm btn-secondary btn-sound" id="btn-sound" title="Toggle sounds (M)">&#9835;</button>
+        <button class="btn btn-sm btn-secondary" id="btn-backup" title="Backup all data">&#128190; Backup</button>
         <button class="btn btn-sm btn-secondary" id="btn-import">Import PGN</button>
         <button class="btn btn-sm" id="btn-new-repertoire">+ New</button>
     </div>
@@ -40,6 +41,14 @@
         <div class="home-header">
             <h2>My Repertoires</h2>
         </div>
+        <div class="home-actions-row">
+            <label class="btn btn-sm btn-secondary btn-restore" title="Restore from backup">
+                &#128194; Restore Backup
+                <input type="file" id="restore-file" accept=".json" style="display:none">
+            </label>
+            <span id="home-storage-info" class="text-muted" style="font-size: 0.8rem;"></span>
+        </div>
+        <div id="restore-status" style="display:none"></div>
         <div id="repertoire-list">
             <div class="empty-state">
                 <p>No repertoires yet.</p>

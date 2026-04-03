@@ -117,6 +117,101 @@ class RepertoireDB {
         return PGNParser.export(tree);
     }
 
+    /**
+     * Export ALL repertoires as a single JSON backup.
+     * Includes all training stats, metadata, and tree structure.
+     */
+    async exportAll() {
+        await this.open();
+
+        const allData = await new Promise((resolve, reject) => {
+            const tx = this.db.transaction(RepertoireDB.STORE_NAME, 'readonly');
+            const store = tx.objectStore(RepertoireDB.STORE_NAME);
+            const request = store.getAll();
+            request.onsuccess = (event) => resolve(event.target.result);
+            request.onerror = (event) => reject(new Error('Export all failed: ' + event.target.error));
+        });
+
+        return {
+            version: 1,
+            appName: 'Chess Opening Repertoire Trainer',
+            exportedAt: new Date().toISOString(),
+            repertoireCount: allData.length,
+            repertoires: allData
+        };
+    }
+
+    /**
+     * Import repertoires from a JSON backup.
+     * @param {Object} backupData - The backup object from exportAll()
+     * @param {string} mode - 'merge' (skip existing IDs) or 'replace' (overwrite all)
+     * @returns {Object} { imported, skipped, errors }
+     */
+    async importAll(backupData, mode = 'merge') {
+        if (!backupData || !backupData.repertoires || !Array.isArray(backupData.repertoires)) {
+            throw new Error('Invalid backup file format');
+        }
+        if (backupData.version !== 1) {
+            throw new Error('Unsupported backup version: ' + backupData.version);
+        }
+
+        await this.open();
+
+        let imported = 0;
+        let skipped = 0;
+        let errors = [];
+
+        if (mode === 'replace') {
+            // Clear all existing data first
+            await new Promise((resolve, reject) => {
+                const tx = this.db.transaction(RepertoireDB.STORE_NAME, 'readwrite');
+                const store = tx.objectStore(RepertoireDB.STORE_NAME);
+                const request = store.clear();
+                request.onsuccess = () => resolve();
+                request.onerror = (event) => reject(new Error('Clear failed: ' + event.target.error));
+            });
+        }
+
+        for (const repData of backupData.repertoires) {
+            try {
+                if (!repData.id || !repData.tree) {
+                    errors.push(`Skipped invalid repertoire (no id/tree)`);
+                    continue;
+                }
+
+                if (mode === 'merge') {
+                    // Check if already exists
+                    const existing = await new Promise((resolve, reject) => {
+                        const tx = this.db.transaction(RepertoireDB.STORE_NAME, 'readonly');
+                        const store = tx.objectStore(RepertoireDB.STORE_NAME);
+                        const request = store.get(repData.id);
+                        request.onsuccess = (event) => resolve(event.target.result);
+                        request.onerror = () => resolve(null);
+                    });
+
+                    if (existing) {
+                        skipped++;
+                        continue;
+                    }
+                }
+
+                await new Promise((resolve, reject) => {
+                    const tx = this.db.transaction(RepertoireDB.STORE_NAME, 'readwrite');
+                    const store = tx.objectStore(RepertoireDB.STORE_NAME);
+                    const request = store.put(repData);
+                    request.onsuccess = () => resolve();
+                    request.onerror = (event) => reject(new Error('Put failed: ' + event.target.error));
+                });
+                imported++;
+
+            } catch (e) {
+                errors.push(`Error importing "${repData.name || repData.id}": ${e.message}`);
+            }
+        }
+
+        return { imported, skipped, errors };
+    }
+
     async getStorageEstimate() {
         if (navigator.storage && navigator.storage.estimate) {
             const est = await navigator.storage.estimate();

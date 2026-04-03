@@ -1,0 +1,16 @@
+{
+  "name": "chess-opening-repertoire",
+  "version": "1.0.0",
+  "description": "Chess Opening Repertoire Trainer - practice openings with spaced repetition",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "electron .",
+    "web": "npx serve . -l 8080 -s",
+    "postinstall": "echo 'Run: npm start (desktop) or npm run web (browser)'"
+  },
+  "keywords": ["chess", "openings", "repertoire", "trainer", "pgn"],
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

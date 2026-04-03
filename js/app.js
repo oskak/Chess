@@ -683,16 +683,83 @@ class App {
 
     async _exportRepertoire(id) {
         try {
-            const pgn = await this.db.exportRepertoire(id);
+            const tree = await this.db.loadRepertoire(id);
+            if (!tree) throw new Error('Repertoire not found');
+            const pgn = PGNParser.export(tree);
             const blob = new Blob([pgn], { type: 'application/x-chess-pgn' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'repertoire.pgn';
+            const safeName = tree.name.replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 50);
+            a.download = `${safeName}.pgn`;
             a.click();
             URL.revokeObjectURL(url);
         } catch (e) {
             alert('Export failed: ' + e.message);
+        }
+    }
+
+    // ===================== BACKUP / RESTORE =====================
+
+    async _backupAll() {
+        try {
+            const backup = await this.db.exportAll();
+            const json = JSON.stringify(backup, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            const date = new Date().toISOString().split('T')[0];
+            a.download = `chess-repertoire-backup-${date}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            alert('Backup failed: ' + e.message);
+        }
+    }
+
+    async _restoreFromFile(file) {
+        const statusEl = document.getElementById('restore-status');
+        try {
+            statusEl.style.display = 'block';
+            statusEl.className = '';
+            statusEl.textContent = 'Reading backup file...';
+
+            const text = await file.text();
+            const backup = JSON.parse(text);
+
+            const count = backup.repertoireCount || backup.repertoires?.length || 0;
+            const date = backup.exportedAt ? new Date(backup.exportedAt).toLocaleString() : 'unknown';
+
+            const mode = confirm(
+                `Backup from ${date}\n${count} repertoire(s) found.\n\nOK = Merge (add missing, keep existing)\nCancel = Replace ALL (delete current data first)`
+            ) ? 'merge' : 'replace';
+
+            if (mode === 'replace') {
+                if (!confirm('Are you sure? This will DELETE all current repertoires and replace them with the backup.')) {
+                    statusEl.style.display = 'none';
+                    return;
+                }
+            }
+
+            statusEl.textContent = 'Restoring...';
+
+            const result = await this.db.importAll(backup, mode);
+
+            statusEl.className = 'restore-success';
+            let msg = `Restored ${result.imported} repertoire(s).`;
+            if (result.skipped > 0) msg += ` Skipped ${result.skipped} (already exist).`;
+            if (result.errors.length > 0) msg += ` ${result.errors.length} error(s).`;
+            statusEl.textContent = msg;
+
+            await this._loadRepertoireList();
+
+            setTimeout(() => { statusEl.style.display = 'none'; }, 5000);
+
+        } catch (e) {
+            statusEl.className = 'restore-error';
+            statusEl.textContent = 'Restore failed: ' + e.message;
+            setTimeout(() => { statusEl.style.display = 'none'; }, 5000);
         }
     }
 
@@ -818,6 +885,19 @@ class App {
 
         document.getElementById('btn-new-repertoire')?.addEventListener('click', () => {
             this._createNewRepertoire();
+        });
+
+        // Backup / Restore
+        document.getElementById('btn-backup')?.addEventListener('click', () => {
+            this._backupAll();
+        });
+
+        document.getElementById('restore-file')?.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                this._restoreFromFile(file);
+                e.target.value = ''; // reset so same file can be selected again
+            }
         });
 
         // Import
