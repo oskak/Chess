@@ -120,6 +120,9 @@ class Trainer {
     }
 
     _collectAllLines(node, currentPath, lines) {
+        // Skip disabled nodes and their subtrees
+        if (!node.enabled && currentPath.length > 0) return;
+
         if (node.isLeaf() && currentPath.length > 0) {
             lines.push([...currentPath]);
             return;

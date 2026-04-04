@@ -18,6 +18,8 @@ class MoveTreeNode {
         this.priority = 0;          // 0 = mainline, 1+ = alternative
         this.fen = null;            // Position FEN (first 4 fields - no counters)
         this.isTransposition = false; // True if this position is reachable via multiple paths
+        this.enabled = true;        // Whether this node is active for training
+        this.collapsed = false;     // UI state for tree view (collapsed branch)
 
         // Training stats (SM-2 spaced repetition)
         this.stats = {
@@ -321,6 +323,61 @@ class MoveTree {
         }
     }
 
+    /**
+     * Toggle enabled state of a node. Disabled nodes are skipped during training.
+     */
+    toggleEnabled(node, propagateToChildren = false) {
+        node.enabled = !node.enabled;
+        if (propagateToChildren) {
+            this._traverse(node, (child) => {
+                if (child !== node) child.enabled = node.enabled;
+            });
+        }
+        this._dirty = true;
+    }
+
+    /**
+     * Delete a node and its entire subtree from the tree.
+     */
+    deleteSubtree(node) {
+        if (!node.parent) return; // Can't delete root
+        node.parent.children.delete(node.move);
+        this._dirty = true;
+        this.rebuildPositionIndex();
+    }
+
+    /**
+     * Set a node as the mainline (priority 0) among its siblings.
+     */
+    setMainline(node) {
+        if (!node.parent) return;
+        for (const [, sibling] of node.parent.children) {
+            if (sibling === node) {
+                sibling.priority = 0;
+            } else if (sibling.priority <= node.priority) {
+                sibling.priority++;
+            }
+        }
+        this._dirty = true;
+    }
+
+    /**
+     * Get accuracy percentage for a node (0-100 or null if no attempts).
+     */
+    static getNodeAccuracy(node) {
+        if (!node.stats || node.stats.attempts === 0) return null;
+        return Math.round((node.stats.correct / node.stats.attempts) * 100);
+    }
+
+    /**
+     * Set default collapse state: expand up to maxDepth, collapse deeper.
+     */
+    setDefaultCollapse(maxExpandedDepth = 3) {
+        this._traverse(this.root, (node) => {
+            node.collapsed = node.getDepth() >= maxExpandedDepth && node.hasChildren();
+        });
+    }
+
     merge(otherTree) {
         this._mergeNodes(this.root, otherTree.root);
         this._dirty = true;
@@ -367,6 +424,8 @@ class MoveTree {
         if (node.priority > 0) obj.p = node.priority;
         if (node.fen) obj.f = node.fen;
         if (node.isTransposition) obj.t = 1;
+        if (!node.enabled) obj.e = 0;
+        if (node.collapsed) obj.cl = 1;
         if (node.stats.attempts > 0) {
             obj.s = [
                 node.stats.attempts,
@@ -405,6 +464,8 @@ class MoveTree {
         if (data.p !== undefined) node.priority = data.p;
         if (data.f) node.fen = data.f;
         if (data.t) node.isTransposition = true;
+        if (data.e === 0) node.enabled = false;
+        if (data.cl) node.collapsed = true;
         if (data.s) {
             node.stats = {
                 attempts: data.s[0],

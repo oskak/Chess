@@ -24,6 +24,10 @@ class App {
         this.trainerLineHadError = false;
         this.sounds = new SoundEngine();
         this.pgnWorker = null;
+        this.engine = null;
+        this.engineEnabled = false;
+        this._engineDebounce = null;
+        this._contextMenuNode = null;
     }
 
     async init() {
@@ -186,7 +190,17 @@ class App {
                     this.sounds.playTransposition();
                 }
             } else {
-                this.currentNode = null;
+                // Move not in repertoire - offer to add it
+                if (confirm(`Add ${move.san} to repertoire?`)) {
+                    const newNode = this.currentNode.addChild(move.san);
+                    newNode.fen = this.chess.fen().split(' ').slice(0, 4).join(' ');
+                    this.currentNode = newNode;
+                    this.currentTree._dirty = true;
+                    this._saveCurrentRepertoire();
+                    this._renderTreeView();
+                } else {
+                    this.currentNode = null;
+                }
             }
         }
 
@@ -240,6 +254,12 @@ class App {
 
         // Update transposition info
         this._updateTranspositionInfo();
+
+        // Update ECO opening name
+        this._updateECO();
+
+        // Update engine evaluation (debounced)
+        this._updateEngineEval();
 
         this._updateExplorerStats();
     }
@@ -341,6 +361,321 @@ class App {
         }
         html += '</div>';
         el.innerHTML = html;
+    }
+
+    // ===================== ECO OPENING NAMES =====================
+
+    _updateECO() {
+        const el = document.getElementById('explorer-opening');
+        if (!el) return;
+        const fen = this.chess.fen();
+        const eco = lookupECO(fen);
+        if (eco && eco.name) {
+            el.innerHTML = eco.code
+                ? `<span class="eco-code">${eco.code}</span>${eco.name}`
+                : eco.name;
+        } else {
+            el.innerHTML = '';
+        }
+    }
+
+    // ===================== ENGINE =====================
+
+    async _toggleEngine() {
+        this.engineEnabled = !this.engineEnabled;
+        const content = document.getElementById('engine-content');
+        const btn = document.getElementById('btn-engine-toggle');
+
+        if (this.engineEnabled) {
+            if (!this.engine) {
+                this.engine = new ChessEngine();
+                try {
+                    btn.textContent = '...';
+                    await this.engine.init();
+                } catch (e) {
+                    console.error('Engine init failed:', e);
+                    this.engineEnabled = false;
+                    btn.textContent = '\u2699';
+                    return;
+                }
+            }
+            content.style.display = 'block';
+            btn.classList.add('active');
+            btn.textContent = '\u2699';
+            this._updateEngineEval();
+        } else {
+            content.style.display = 'none';
+            btn.classList.remove('active');
+            if (this.engine) this.engine.stop();
+        }
+    }
+
+    _updateEngineEval() {
+        if (!this.engineEnabled || !this.engine || this.view !== 'explorer') return;
+
+        clearTimeout(this._engineDebounce);
+        this._engineDebounce = setTimeout(async () => {
+            const fen = this.chess.fen();
+            const fillEl = document.getElementById('engine-eval-fill');
+            const scoreEl = document.getElementById('engine-score');
+            const pvEl = document.getElementById('engine-pv');
+            const depthEl = document.getElementById('engine-depth');
+
+            // Live updates via onInfo callback
+            this.engine.onInfo = (info) => {
+                if (fillEl) fillEl.style.width = ChessEngine.getBarPercent(info) + '%';
+                if (scoreEl) scoreEl.textContent = ChessEngine.formatScore(info);
+                if (depthEl) depthEl.textContent = `depth ${info.depth}`;
+            };
+
+            try {
+                const result = await this.engine.evaluate(fen, 18);
+                if (!result) return;
+
+                if (fillEl) fillEl.style.width = ChessEngine.getBarPercent(result) + '%';
+                if (scoreEl) scoreEl.textContent = ChessEngine.formatScore(result);
+                if (depthEl) depthEl.textContent = `depth ${result.depth}`;
+
+                // Show PV in figurine notation
+                if (pvEl && result.pv && result.pv.length > 0) {
+                    const tempChess = new Chess(fen);
+                    const pvSan = [];
+                    for (let i = 0; i < Math.min(result.pv.length, 6); i++) {
+                        const uci = result.pv[i];
+                        const san = ChessEngine.uciToSan(tempChess, uci);
+                        const move = tempChess.move(san, { sloppy: true });
+                        if (!move) break;
+                        pvSan.push(this._toFigurine(move.san));
+                    }
+                    pvEl.textContent = pvSan.join(' ');
+                }
+            } catch (e) {
+                console.error('Engine eval error:', e);
+            }
+        }, 400);
+    }
+
+    // ===================== TREE VIEW =====================
+
+    _renderTreeView() {
+        const container = document.getElementById('explorer-tree-view');
+        if (!container || !this.currentTree) return;
+
+        const html = this._renderTreeBranch(this.currentTree.root, 0, 8);
+        container.innerHTML = html || '<div class="tree-more">Empty repertoire</div>';
+        this._bindTreeEvents(container);
+    }
+
+    _renderTreeBranch(node, depth, maxDepth) {
+        let html = '';
+        const children = [...node.children.entries()].sort((a, b) => a[1].priority - b[1].priority);
+
+        for (const [san, child] of children) {
+            const hasChildren = child.hasChildren();
+            const isCollapsed = child.collapsed;
+            const acc = MoveTree.getNodeAccuracy(child);
+            const colorClass = this._getTreeNodeClass(child);
+            const indent = depth * 14 + 4;
+            const isActive = this.currentNode === child;
+            const nagStr = child.nags.map(n => PGNParser.NAG_REVERSE[n] || '').join('');
+            const moveNum = Math.floor(depth / 2) + 1;
+            const isWhite = depth % 2 === 0;
+            const moveNumStr = isWhite ? `<span class="tree-movenum">${moveNum}.</span>` :
+                               (child.priority > 0 || !node.children.entries().next().value || node.children.entries().next().value[1] !== child)
+                               ? `<span class="tree-movenum">${moveNum}...</span>` : '';
+
+            const chevron = hasChildren
+                ? `<span class="tree-chevron" data-path="${child.getPath().join(',')}">${isCollapsed ? '&#9654;' : '&#9660;'}</span>`
+                : '<span class="tree-chevron"></span>';
+
+            const accBadge = acc !== null
+                ? `<span class="tree-accuracy">${acc}%</span>`
+                : '';
+
+            const toggleIcon = child.enabled ? '&#128065;' : '&#10005;';
+            const toggleClass = child.enabled ? '' : ' disabled';
+
+            html += `<div class="tree-node ${colorClass}${isActive ? ' tree-active' : ''}" style="padding-left:${indent}px" data-path="${child.getPath().join(',')}">
+                ${chevron}
+                <span class="tree-move">${moveNumStr}${this._toFigurine(san)}</span>
+                ${nagStr ? `<span class="tree-nag">${nagStr}</span>` : ''}
+                ${accBadge}
+                <button class="tree-toggle-btn${toggleClass}" data-path="${child.getPath().join(',')}" title="${child.enabled ? 'Disable' : 'Enable'}">${toggleIcon}</button>
+            </div>`;
+
+            // Render children if not collapsed and within depth limit
+            if (hasChildren && !isCollapsed && depth < maxDepth) {
+                html += this._renderTreeBranch(child, depth + 1, maxDepth);
+            } else if (hasChildren && !isCollapsed && depth >= maxDepth) {
+                html += `<div class="tree-more" style="padding-left:${(depth + 1) * 14 + 4}px" data-expand-path="${child.getPath().join(',')}">... more</div>`;
+            }
+        }
+        return html;
+    }
+
+    _getTreeNodeClass(node) {
+        if (!node.enabled) return 'tree-disabled';
+        if (node.stats.attempts === 0) return 'tree-new';
+        const acc = MoveTree.getNodeAccuracy(node);
+        if (node.stats.streak >= 5) return 'tree-mastered';
+        if (acc !== null && acc < 50) return 'tree-struggling';
+        return 'tree-learning';
+    }
+
+    _bindTreeEvents(container) {
+        // Chevron click - toggle collapse
+        container.querySelectorAll('.tree-chevron[data-path]').forEach(el => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const path = el.dataset.path.split(',').filter(Boolean);
+                const node = this.currentTree.getNodeAt(path);
+                if (node) {
+                    node.collapsed = !node.collapsed;
+                    this._renderTreeView();
+                }
+            });
+        });
+
+        // Node click - navigate to position
+        container.querySelectorAll('.tree-node').forEach(el => {
+            el.addEventListener('click', (e) => {
+                if (e.target.closest('.tree-chevron') || e.target.closest('.tree-toggle-btn')) return;
+                const path = el.dataset.path.split(',').filter(Boolean);
+                this._navigateToPath(path);
+            });
+
+            // Right-click context menu
+            el.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                const path = el.dataset.path.split(',').filter(Boolean);
+                const node = this.currentTree.getNodeAt(path);
+                if (node) this._showContextMenu(e.clientX, e.clientY, node);
+            });
+        });
+
+        // Toggle enabled
+        container.querySelectorAll('.tree-toggle-btn').forEach(el => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const path = el.dataset.path.split(',').filter(Boolean);
+                const node = this.currentTree.getNodeAt(path);
+                if (node) {
+                    this.currentTree.toggleEnabled(node);
+                    this._renderTreeView();
+                    this._saveCurrentRepertoire();
+                }
+            });
+        });
+
+        // "More" links
+        container.querySelectorAll('.tree-more[data-expand-path]').forEach(el => {
+            el.addEventListener('click', () => {
+                const path = el.dataset.expandPath.split(',').filter(Boolean);
+                const node = this.currentTree.getNodeAt(path);
+                if (node) {
+                    node.collapsed = false;
+                    this._renderTreeView();
+                }
+            });
+        });
+    }
+
+    _navigateToPath(movePath) {
+        this.chess.reset();
+        this.currentNode = this.currentTree.root;
+        this.explorerMoveStack = [];
+
+        for (const san of movePath) {
+            const move = this.chess.move(san, { sloppy: true });
+            if (!move) break;
+            this.explorerMoveStack.push(move);
+            const child = this.currentNode.getChild(move.san);
+            if (child) this.currentNode = child;
+            else break;
+        }
+
+        this.board.position(this.chess.fen());
+        this._clearAllSquareEffects();
+        this._updateExplorerUI();
+
+        if (this.explorerMoveStack.length > 0) {
+            const lastMove = this.explorerMoveStack[this.explorerMoveStack.length - 1];
+            this._highlightMove(lastMove, 'last');
+        }
+    }
+
+    // ===================== CONTEXT MENU =====================
+
+    _showContextMenu(x, y, node) {
+        this._hideContextMenu();
+        this._contextMenuNode = node;
+
+        const menu = document.createElement('div');
+        menu.className = 'context-menu';
+        menu.id = 'context-menu';
+        menu.style.left = x + 'px';
+        menu.style.top = y + 'px';
+
+        const enableLabel = node.enabled ? 'Disable Line' : 'Enable Line';
+        const enableIcon = node.enabled ? '&#10005;' : '&#10003;';
+
+        menu.innerHTML = `
+            <div class="context-menu-item" data-action="toggle-enable">${enableIcon} ${enableLabel}</div>
+            <div class="context-menu-item" data-action="set-mainline">&#9733; Set as Mainline</div>
+            <div class="context-menu-sep"></div>
+            <div class="context-menu-item danger" data-action="delete">&#128465; Delete Line</div>
+        `;
+
+        document.body.appendChild(menu);
+
+        // Adjust if off-screen
+        const rect = menu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) menu.style.left = (x - rect.width) + 'px';
+        if (rect.bottom > window.innerHeight) menu.style.top = (y - rect.height) + 'px';
+
+        menu.querySelectorAll('.context-menu-item').forEach(item => {
+            item.addEventListener('click', () => {
+                this._handleContextAction(item.dataset.action);
+                this._hideContextMenu();
+            });
+        });
+
+        // Close on outside click
+        setTimeout(() => {
+            document.addEventListener('click', this._hideContextMenu.bind(this), { once: true });
+        }, 10);
+    }
+
+    _hideContextMenu() {
+        const menu = document.getElementById('context-menu');
+        if (menu) menu.remove();
+    }
+
+    _handleContextAction(action) {
+        const node = this._contextMenuNode;
+        if (!node || !this.currentTree) return;
+
+        switch (action) {
+            case 'toggle-enable':
+                this.currentTree.toggleEnabled(node);
+                break;
+            case 'set-mainline':
+                this.currentTree.setMainline(node);
+                break;
+            case 'delete':
+                if (confirm(`Delete "${node.move}" and all continuations?`)) {
+                    this.currentTree.deleteSubtree(node);
+                    // If we deleted the current node, go to parent
+                    if (this.currentNode === node) {
+                        this.currentNode = node.parent || this.currentTree.root;
+                    }
+                }
+                break;
+        }
+
+        this._renderTreeView();
+        this._updateExplorerUI();
+        this._saveCurrentRepertoire();
     }
 
     _formatMoveHistory() {
@@ -686,7 +1021,9 @@ class App {
 
         if (mode === 'explorer') {
             this._showView('explorer');
+            this.currentTree.setDefaultCollapse(3);
             this._updateExplorerUI();
+            this._renderTreeView();
         } else if (mode === 'trainer') {
             this._showView('trainer');
             this._startTraining();
@@ -974,6 +1311,26 @@ class App {
             this.board.flip();
         });
 
+        // Engine toggle
+        document.getElementById('btn-engine-toggle')?.addEventListener('click', () => {
+            this._toggleEngine();
+        });
+
+        // Tree view controls
+        document.getElementById('btn-tree-collapse-all')?.addEventListener('click', () => {
+            if (this.currentTree) {
+                this.currentTree.setDefaultCollapse(0);
+                this._renderTreeView();
+            }
+        });
+
+        document.getElementById('btn-tree-expand-all')?.addEventListener('click', () => {
+            if (this.currentTree) {
+                this.currentTree._traverse(this.currentTree.root, n => { n.collapsed = false; });
+                this._renderTreeView();
+            }
+        });
+
         // Tab switching
         document.getElementById('tab-train')?.addEventListener('click', () => {
             if (!this.currentTree) return;
@@ -992,6 +1349,7 @@ class App {
             this.currentNode = this.currentTree.root;
             this._clearAllSquareEffects();
             this._updateExplorerUI();
+            this._renderTreeView();
         });
 
         // Sidebar toggle (mobile)
@@ -1084,6 +1442,11 @@ class App {
                     }
                     break;
                 }
+                case 'e':
+                    if (this.view === 'explorer') {
+                        this._toggleEngine();
+                    }
+                    break;
             }
         });
     }

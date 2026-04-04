@@ -22,6 +22,7 @@
   "dependencies": {
     "@chrisoakman/chessboardjs": "^1.0.0",
     "chess.js": "^0.10.3",
-    "jquery": "^3.7.1"
+    "jquery": "^3.7.1",
+    "stockfish.js": "^10.0.2"
   }
 }
