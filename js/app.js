@@ -15,7 +15,8 @@ class App {
         this.currentTree = null;
         this.currentNode = null;
         this.boardOrientation = 'white';
-        this.view = 'home'; // home, explorer, trainer, import
+        this.view = 'welcome'; // welcome, explorer, trainer, import
+        this.currentRepertoireId = null;
         this.explorerMoveStack = []; // For undo in explorer
         this.highlightSquares = [];
         this.autoPlayDelay = 400; // ms delay for opponent moves
@@ -28,8 +29,8 @@ class App {
     async init() {
         this._initBoard();
         this._bindEvents();
-        await this._loadRepertoireList();
-        this._showView('home');
+        await this._loadSidebar();
+        this._showView('welcome');
     }
 
     // ===================== BOARD =====================
@@ -39,7 +40,7 @@ class App {
             draggable: true,
             position: 'start',
             orientation: 'white',
-            pieceTheme: 'https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/img/chesspieces/wikipedia/{piece}.png',
+            pieceTheme: function(piece) { return getPieceImageUrl(piece); },
             onDragStart: (source, piece, position, orientation) => this._onDragStart(source, piece, position, orientation),
             onDrop: (source, target, piece, newPos, oldPos, orientation) => this._onDrop(source, target, piece),
             onSnapEnd: () => this._onSnapEnd(),
@@ -526,7 +527,7 @@ class App {
             });
             document.getElementById('btn-back-home')?.addEventListener('click', () => {
                 this._saveCurrentRepertoire();
-                this._showView('home');
+                this._showView('welcome');
             });
         }
     }
@@ -559,10 +560,12 @@ class App {
     _showView(viewName) {
         this.view = viewName;
 
-        // Hide all full-width views
-        document.querySelectorAll('.view-full').forEach(v => v.classList.remove('active'));
+        // Hide all view panels
+        document.querySelectorAll('.view-panel').forEach(v => {
+            v.classList.remove('active');
+            v.style.display = 'none';
+        });
 
-        // Manage workspace vs full-width views
         const workspace = document.getElementById('workspace');
         const explorerPanel = document.getElementById('explorer-panel');
         const trainerPanel = document.getElementById('trainer-panel');
@@ -570,60 +573,54 @@ class App {
         const trainerControls = document.getElementById('trainer-controls');
 
         if (viewName === 'explorer' || viewName === 'trainer') {
-            // Show workspace with board
-            workspace.style.display = 'grid';
+            // Show workspace
+            workspace.style.display = 'flex';
+            workspace.classList.add('active');
 
-            // Toggle panels
+            // Toggle panels and controls
             explorerPanel.style.display = viewName === 'explorer' ? 'block' : 'none';
             trainerPanel.style.display = viewName === 'trainer' ? 'block' : 'none';
             explorerControls.style.display = viewName === 'explorer' ? 'flex' : 'none';
             trainerControls.style.display = viewName === 'trainer' ? 'flex' : 'none';
 
-            // Title
-            const titleEl = document.getElementById('workspace-title');
-            if (titleEl && this.currentTree) {
-                titleEl.textContent = this.currentTree.name;
-            }
+            // Update tabs
+            document.getElementById('tab-train')?.classList.toggle('active', viewName === 'trainer');
+            document.getElementById('tab-explore')?.classList.toggle('active', viewName === 'explorer');
 
-            // Breadcrumb
-            const nav = document.getElementById('header-breadcrumb');
-            if (nav && this.currentTree) {
-                nav.innerHTML = `<span style="color:var(--text-muted)">&#9656;</span> ${this._escapeHtml(this.currentTree.name)} <span style="color:var(--text-muted)">&#9656;</span> ${viewName === 'explorer' ? 'Explorer' : 'Training'}`;
-            }
-
-            // Resize board after layout renders
+            // Resize board after layout
             setTimeout(() => {
                 if (this.board) this.board.resize();
             }, 50);
         } else {
-            // Hide workspace, show full-width view
+            // Show the requested view panel
             workspace.style.display = 'none';
-
             const viewEl = document.getElementById(`view-${viewName}`);
-            if (viewEl) viewEl.classList.add('active');
-
-            // Clear breadcrumb
-            const nav = document.getElementById('header-breadcrumb');
-            if (nav) nav.innerHTML = '';
+            if (viewEl) {
+                viewEl.style.display = 'flex';
+                viewEl.classList.add('active');
+            }
         }
 
-        if (viewName === 'home') {
-            this._loadRepertoireList();
-        }
+        // Close mobile sidebar
+        document.getElementById('sidebar')?.classList.remove('open');
+        document.getElementById('sidebar-overlay')?.classList.remove('active');
+
+        this._updateSidebarSelection();
     }
 
-    async _loadRepertoireList() {
+    _updateSidebarSelection() {
+        document.querySelectorAll('.sidebar-item').forEach(el => {
+            el.classList.toggle('active', el.dataset.id === this.currentRepertoireId);
+        });
+    }
+
+    async _loadSidebar() {
         const list = await this.db.listRepertoires();
-        const container = document.getElementById('repertoire-list');
+        const container = document.getElementById('sidebar-list');
         if (!container) return;
 
         if (list.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-icon">&#9822;</div>
-                    <p>No repertoires yet.</p>
-                    <p>Import a PGN file or create a new repertoire to get started.</p>
-                </div>`;
+            container.innerHTML = '<div class="sidebar-empty">No repertoires yet.</div>';
             return;
         }
 
@@ -631,46 +628,37 @@ class App {
         for (const rep of list) {
             const colorIcon = rep.color === 'white' ? '&#9812;' : '&#9818;';
             const colorClass = rep.color === 'white' ? 'white-rep' : 'black-rep';
-            const date = new Date(rep.updatedAt).toLocaleDateString();
+            const isActive = rep.id === this.currentRepertoireId ? ' active' : '';
             html += `
-                <div class="repertoire-card ${colorClass}" data-id="${rep.id}">
-                    <div class="rep-color">${colorIcon}</div>
-                    <div class="rep-info">
-                        <div class="rep-name">${this._escapeHtml(rep.name)}</div>
-                        <div class="rep-meta">
-                            <span>Updated: ${date}</span>
-                        </div>
-                    </div>
-                    <div class="rep-actions">
-                        <button class="btn btn-sm btn-primary btn-train" data-id="${rep.id}" title="Train">&#9654;</button>
-                        <button class="btn btn-sm btn-secondary btn-explore" data-id="${rep.id}" title="Explore">&#128270;</button>
-                        <button class="btn btn-sm btn-secondary btn-export" data-id="${rep.id}" title="Export PGN">&#128190;</button>
-                        <button class="btn btn-sm btn-danger btn-delete" data-id="${rep.id}" title="Delete">&#10005;</button>
+                <div class="sidebar-item ${colorClass}${isActive}" data-id="${rep.id}">
+                    <span class="sidebar-color">${colorIcon}</span>
+                    <span class="sidebar-name">${this._escapeHtml(rep.name)}</span>
+                    <div class="sidebar-item-actions">
+                        <button class="btn btn-export-sb" data-id="${rep.id}" title="Export PGN">&#128190;</button>
+                        <button class="btn btn-delete-sb btn-danger" data-id="${rep.id}" title="Delete">&#10005;</button>
                     </div>
                 </div>`;
         }
         container.innerHTML = html;
 
-        // Bind events
-        container.querySelectorAll('.btn-train').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this._openRepertoire(btn.dataset.id, 'trainer');
+        // Bind sidebar click events
+        container.querySelectorAll('.sidebar-item').forEach(el => {
+            el.addEventListener('click', (e) => {
+                // Don't trigger if clicking action buttons
+                if (e.target.closest('.sidebar-item-actions')) return;
+                this._saveCurrentRepertoire();
+                this._openRepertoire(el.dataset.id, 'trainer');
             });
         });
-        container.querySelectorAll('.btn-explore').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this._openRepertoire(btn.dataset.id, 'explorer');
-            });
-        });
-        container.querySelectorAll('.btn-export').forEach(btn => {
+
+        container.querySelectorAll('.btn-export-sb').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this._exportRepertoire(btn.dataset.id);
             });
         });
-        container.querySelectorAll('.btn-delete').forEach(btn => {
+
+        container.querySelectorAll('.btn-delete-sb').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this._deleteRepertoire(btn.dataset.id);
@@ -687,6 +675,7 @@ class App {
 
         this.currentTree = tree;
         this.currentNode = tree.root;
+        this.currentRepertoireId = id;
         this.boardOrientation = tree.color;
         this.board.orientation(this.boardOrientation);
 
@@ -702,6 +691,8 @@ class App {
             this._showView('trainer');
             this._startTraining();
         }
+
+        this._updateSidebarSelection();
     }
 
     _startTraining(options = {}) {
@@ -811,7 +802,7 @@ class App {
             if (result.errors.length > 0) msg += ` ${result.errors.length} error(s).`;
             statusEl.textContent = msg;
 
-            await this._loadRepertoireList();
+            await this._loadSidebar();
 
             setTimeout(() => { statusEl.style.display = 'none'; }, 5000);
 
@@ -826,7 +817,7 @@ class App {
         if (!confirm('Delete this repertoire? This cannot be undone.')) return;
         try {
             await this.db.deleteRepertoire(id);
-            await this._loadRepertoireList();
+            await this._loadSidebar();
         } catch (e) {
             alert('Delete failed: ' + e.message);
         }
@@ -916,12 +907,14 @@ class App {
             textInput.value = '';
             nameInput.value = '';
 
+            await this._loadSidebar();
+
             setTimeout(() => {
-                this._showView('home');
+                this._showView('welcome');
                 progressEl.style.display = 'none';
                 if (statsDiv) statsDiv.style.display = 'none';
                 if (langInfo) langInfo.innerHTML = '';
-            }, 2500);
+            }, 2000);
 
         } catch (e) {
             statusEl.textContent = 'Error: ' + e.message;
@@ -935,7 +928,7 @@ class App {
         // Navigation
         document.getElementById('btn-home')?.addEventListener('click', () => {
             this._saveCurrentRepertoire();
-            this._showView('home');
+            this._showView('welcome');
         });
 
         document.getElementById('btn-import')?.addEventListener('click', () => {
@@ -965,7 +958,7 @@ class App {
         });
 
         document.getElementById('btn-cancel-import')?.addEventListener('click', () => {
-            this._showView('home');
+            this._showView('welcome');
         });
 
         // Explorer controls
@@ -981,14 +974,42 @@ class App {
             this.board.flip();
         });
 
-        document.getElementById('btn-explorer-home')?.addEventListener('click', () => {
-            this._saveCurrentRepertoire();
-            this._showView('home');
-        });
-
-        document.getElementById('btn-explorer-train')?.addEventListener('click', () => {
+        // Tab switching
+        document.getElementById('tab-train')?.addEventListener('click', () => {
+            if (!this.currentTree) return;
+            if (this.view === 'trainer') return;
             this._showView('trainer');
             this._startTraining();
+        });
+
+        document.getElementById('tab-explore')?.addEventListener('click', () => {
+            if (!this.currentTree) return;
+            if (this.view === 'explorer') return;
+            this._showView('explorer');
+            this.chess.reset();
+            this.board.position('start');
+            this.explorerMoveStack = [];
+            this.currentNode = this.currentTree.root;
+            this._clearAllSquareEffects();
+            this._updateExplorerUI();
+        });
+
+        // Sidebar toggle (mobile)
+        document.getElementById('btn-sidebar-toggle')?.addEventListener('click', () => {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('sidebar-overlay');
+            sidebar?.classList.toggle('open');
+            if (overlay) {
+                overlay.classList.toggle('active', sidebar?.classList.contains('open'));
+            }
+        });
+
+        // Sidebar overlay click closes sidebar
+        document.addEventListener('click', (e) => {
+            if (e.target.id === 'sidebar-overlay') {
+                document.getElementById('sidebar')?.classList.remove('open');
+                e.target.classList.remove('active');
+            }
         });
 
         // Trainer controls
@@ -1012,11 +1033,6 @@ class App {
 
         document.getElementById('btn-trainer-flip')?.addEventListener('click', () => {
             this.board.flip();
-        });
-
-        document.getElementById('btn-trainer-home')?.addEventListener('click', () => {
-            this._saveCurrentRepertoire();
-            this._showView('home');
         });
 
         document.getElementById('btn-trainer-restart')?.addEventListener('click', () => {
@@ -1084,6 +1100,7 @@ class App {
 
         const tree = new MoveTree(name, color);
         await this.db.saveRepertoire(tree);
+        await this._loadSidebar();
         await this._openRepertoire(tree.id, 'explorer');
     }
 
