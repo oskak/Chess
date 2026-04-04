@@ -390,12 +390,16 @@ class App {
             if (!this.engine) {
                 this.engine = new ChessEngine();
                 try {
-                    btn.textContent = '...';
+                    btn.textContent = '⏳';
                     await this.engine.init();
+                    console.log('Stockfish engine ready');
                 } catch (e) {
                     console.error('Engine init failed:', e);
                     this.engineEnabled = false;
+                    this.engine = null;
                     btn.textContent = '\u2699';
+                    btn.title = 'Engine failed: ' + e.message;
+                    if (content) content.style.display = 'none';
                     return;
                 }
             }

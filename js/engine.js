@@ -26,26 +26,38 @@ class ChessEngine {
         if (this.ready) return;
 
         return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error('Stockfish init timed out after 10s'));
+            }, 10000);
+
             try {
-                this.worker = new Worker('vendor/stockfish/stockfish.js');
+                // Use WASM version if supported, fall back to asm.js
+                const wasmSupported = typeof WebAssembly === 'object' &&
+                    WebAssembly.validate(Uint8Array.of(0x0, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00));
+                const workerFile = wasmSupported
+                    ? 'vendor/stockfish/stockfish.wasm.js'
+                    : 'vendor/stockfish/stockfish.js';
+                console.log('Loading Stockfish:', workerFile, '(WASM:', wasmSupported, ')');
+                this.worker = new Worker(workerFile);
             } catch (e) {
-                // Try alternative path for different contexts
-                try {
-                    this.worker = new Worker('./vendor/stockfish/stockfish.js');
-                } catch (e2) {
-                    reject(new Error('Failed to load Stockfish: ' + e2.message));
-                    return;
-                }
+                clearTimeout(timeout);
+                reject(new Error('Failed to create Stockfish worker: ' + e.message));
+                return;
             }
 
-            this._resolveReady = resolve;
+            this._resolveReady = () => {
+                clearTimeout(timeout);
+                resolve();
+            };
 
             this.worker.onmessage = (e) => {
                 this._handleMessage(e.data);
             };
 
             this.worker.onerror = (e) => {
-                reject(new Error('Stockfish worker error: ' + e.message));
+                clearTimeout(timeout);
+                console.error('Stockfish worker error:', e);
+                reject(new Error('Stockfish worker error: ' + (e.message || 'unknown')));
             };
 
             // Start UCI initialization
