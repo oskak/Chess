@@ -8,9 +8,20 @@
     "web": "npx serve . -l 8080 -s",
     "postinstall": "echo 'Run: npm start (desktop) or npm run web (browser)'"
   },
-  "keywords": ["chess", "openings", "repertoire", "trainer", "pgn"],
+  "keywords": [
+    "chess",
+    "openings",
+    "repertoire",
+    "trainer",
+    "pgn"
+  ],
   "license": "MIT",
   "devDependencies": {
     "electron": "^33.0.0"
+  },
+  "dependencies": {
+    "@chrisoakman/chessboardjs": "^1.0.0",
+    "chess.js": "^0.10.3",
+    "jquery": "^3.7.1"
   }
 }

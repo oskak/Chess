@@ -216,7 +216,7 @@ class App {
                     : '';
                 const transStr = child.isTransposition ? '<span class="transposition-badge">TRANS</span>' : '';
                 html += `<div class="explorer-child" data-move="${san}">
-                    <span class="move-san">${san}${nagStr}</span>${statsStr}
+                    <span class="move-san">${this._toFigurine(san)}${nagStr}</span>${statsStr}
                     ${child.comment ? `<span class="move-comment">${child.comment}</span>` : ''}
                     ${transStr}
                 </div>`;
@@ -347,12 +347,24 @@ class App {
         let html = '';
         for (let i = 0; i < moves.length; i++) {
             if (i % 2 === 0) {
-                html += `<span class="move-number">${Math.floor(i / 2) + 1}.</span> `;
+                html += `<span class="move-number">${Math.floor(i / 2) + 1}.</span>`;
             }
             const isCurrentMove = i === moves.length - 1;
-            html += `<span class="move-text ${isCurrentMove ? 'current-move' : ''}">${moves[i]}</span> `;
+            html += `<span class="move-text ${isCurrentMove ? 'current-move' : ''}">${this._toFigurine(moves[i])}</span> `;
         }
         return html || '<span class="no-moves">Starting position</span>';
+    }
+
+    /**
+     * Convert SAN to figurine algebraic notation using Unicode chess symbols.
+     * K→♔ Q→♕ R→♖ B→♗ N→♘
+     */
+    _toFigurine(san) {
+        const map = { K: '\u2654', Q: '\u2655', R: '\u2656', B: '\u2657', N: '\u2658' };
+        if (san.length > 1 && map[san[0]]) {
+            return map[san[0]] + san.substring(1);
+        }
+        return san;
     }
 
     // ===================== TRAINER MODE =====================
@@ -546,9 +558,54 @@ class App {
 
     _showView(viewName) {
         this.view = viewName;
-        document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-        const viewEl = document.getElementById(`view-${viewName}`);
-        if (viewEl) viewEl.classList.add('active');
+
+        // Hide all full-width views
+        document.querySelectorAll('.view-full').forEach(v => v.classList.remove('active'));
+
+        // Manage workspace vs full-width views
+        const workspace = document.getElementById('workspace');
+        const explorerPanel = document.getElementById('explorer-panel');
+        const trainerPanel = document.getElementById('trainer-panel');
+        const explorerControls = document.getElementById('explorer-controls');
+        const trainerControls = document.getElementById('trainer-controls');
+
+        if (viewName === 'explorer' || viewName === 'trainer') {
+            // Show workspace with board
+            workspace.style.display = 'grid';
+
+            // Toggle panels
+            explorerPanel.style.display = viewName === 'explorer' ? 'block' : 'none';
+            trainerPanel.style.display = viewName === 'trainer' ? 'block' : 'none';
+            explorerControls.style.display = viewName === 'explorer' ? 'flex' : 'none';
+            trainerControls.style.display = viewName === 'trainer' ? 'flex' : 'none';
+
+            // Title
+            const titleEl = document.getElementById('workspace-title');
+            if (titleEl && this.currentTree) {
+                titleEl.textContent = this.currentTree.name;
+            }
+
+            // Breadcrumb
+            const nav = document.getElementById('header-breadcrumb');
+            if (nav && this.currentTree) {
+                nav.innerHTML = `<span style="color:var(--text-muted)">&#9656;</span> ${this._escapeHtml(this.currentTree.name)} <span style="color:var(--text-muted)">&#9656;</span> ${viewName === 'explorer' ? 'Explorer' : 'Training'}`;
+            }
+
+            // Resize board after layout renders
+            setTimeout(() => {
+                if (this.board) this.board.resize();
+            }, 50);
+        } else {
+            // Hide workspace, show full-width view
+            workspace.style.display = 'none';
+
+            const viewEl = document.getElementById(`view-${viewName}`);
+            if (viewEl) viewEl.classList.add('active');
+
+            // Clear breadcrumb
+            const nav = document.getElementById('header-breadcrumb');
+            if (nav) nav.innerHTML = '';
+        }
 
         if (viewName === 'home') {
             this._loadRepertoireList();
@@ -563,6 +620,7 @@ class App {
         if (list.length === 0) {
             container.innerHTML = `
                 <div class="empty-state">
+                    <div class="empty-icon">&#9822;</div>
                     <p>No repertoires yet.</p>
                     <p>Import a PGN file or create a new repertoire to get started.</p>
                 </div>`;
@@ -572,19 +630,22 @@ class App {
         let html = '';
         for (const rep of list) {
             const colorIcon = rep.color === 'white' ? '&#9812;' : '&#9818;';
+            const colorClass = rep.color === 'white' ? 'white-rep' : 'black-rep';
             const date = new Date(rep.updatedAt).toLocaleDateString();
             html += `
-                <div class="repertoire-card" data-id="${rep.id}">
+                <div class="repertoire-card ${colorClass}" data-id="${rep.id}">
                     <div class="rep-color">${colorIcon}</div>
                     <div class="rep-info">
                         <div class="rep-name">${this._escapeHtml(rep.name)}</div>
-                        <div class="rep-date">Updated: ${date}</div>
+                        <div class="rep-meta">
+                            <span>Updated: ${date}</span>
+                        </div>
                     </div>
                     <div class="rep-actions">
-                        <button class="btn btn-sm btn-train" data-id="${rep.id}" title="Train">&#9654;</button>
-                        <button class="btn btn-sm btn-explore" data-id="${rep.id}" title="Explore">&#128270;</button>
-                        <button class="btn btn-sm btn-export" data-id="${rep.id}" title="Export PGN">&#128190;</button>
-                        <button class="btn btn-sm btn-delete btn-danger" data-id="${rep.id}" title="Delete">&#10005;</button>
+                        <button class="btn btn-sm btn-primary btn-train" data-id="${rep.id}" title="Train">&#9654;</button>
+                        <button class="btn btn-sm btn-secondary btn-explore" data-id="${rep.id}" title="Explore">&#128270;</button>
+                        <button class="btn btn-sm btn-secondary btn-export" data-id="${rep.id}" title="Export PGN">&#128190;</button>
+                        <button class="btn btn-sm btn-danger btn-delete" data-id="${rep.id}" title="Delete">&#10005;</button>
                     </div>
                 </div>`;
         }
@@ -636,11 +697,9 @@ class App {
 
         if (mode === 'explorer') {
             this._showView('explorer');
-            document.getElementById('explorer-title').textContent = tree.name;
             this._updateExplorerUI();
         } else if (mode === 'trainer') {
             this._showView('trainer');
-            document.getElementById('trainer-title').textContent = tree.name;
             this._startTraining();
         }
     }
@@ -929,7 +988,6 @@ class App {
 
         document.getElementById('btn-explorer-train')?.addEventListener('click', () => {
             this._showView('trainer');
-            document.getElementById('trainer-title').textContent = this.currentTree.name;
             this._startTraining();
         });
 
