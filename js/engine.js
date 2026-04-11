@@ -16,6 +16,8 @@ class ChessEngine {
         this.cache = new Map();      // FEN -> evaluation result
         this.maxCacheSize = 5000;
         this.onInfo = null;          // Callback for intermediate info updates
+        this.debug = false;          // Toggle console logging of raw UCI messages
+        this.name = 'Stockfish';     // Engine name from UCI id
     }
 
     /**
@@ -31,14 +33,8 @@ class ChessEngine {
             }, 10000);
 
             try {
-                // Use WASM version if supported, fall back to asm.js
-                const wasmSupported = typeof WebAssembly === 'object' &&
-                    WebAssembly.validate(Uint8Array.of(0x0, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00));
-                const workerFile = wasmSupported
-                    ? 'vendor/stockfish/stockfish.wasm.js'
-                    : 'vendor/stockfish/stockfish.js';
-                console.log('Loading Stockfish:', workerFile, '(WASM:', wasmSupported, ')');
-                this.worker = new Worker(workerFile);
+                console.log('Loading Stockfish 18 (lite-single WASM)...');
+                this.worker = new Worker('vendor/stockfish/stockfish.js');
             } catch (e) {
                 clearTimeout(timeout);
                 reject(new Error('Failed to create Stockfish worker: ' + e.message));
@@ -51,13 +47,18 @@ class ChessEngine {
             };
 
             this.worker.onmessage = (e) => {
+                if (this.debug) console.log('[SF]', e.data);
                 this._handleMessage(e.data);
             };
 
             this.worker.onerror = (e) => {
                 clearTimeout(timeout);
-                console.error('Stockfish worker error:', e);
-                reject(new Error('Stockfish worker error: ' + (e.message || 'unknown')));
+                console.error('[SF] Worker error:', e);
+                reject(new Error('Stockfish worker error: ' + (e.message || e.filename || 'unknown')));
+            };
+
+            this.worker.onmessageerror = (e) => {
+                console.error('[SF] Message error:', e);
             };
 
             // Start UCI initialization
@@ -73,6 +74,12 @@ class ChessEngine {
 
     _handleMessage(line) {
         if (typeof line !== 'string') return;
+
+        // Capture engine name
+        if (line.startsWith('id name')) {
+            this.name = line.substring(8).trim();
+            return;
+        }
 
         // UCI initialization
         if (line === 'uciok') {

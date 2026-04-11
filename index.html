@@ -45,6 +45,7 @@
         <div class="sidebar-actions">
             <button class="btn btn-sm btn-primary sidebar-btn" id="btn-new-repertoire">+ New Repertoire</button>
             <button class="btn btn-sm btn-secondary sidebar-btn" id="btn-import">Import PGN</button>
+            <button class="btn btn-sm btn-secondary sidebar-btn" id="btn-sandbox">&#9823; Sandbox Board</button>
             <label class="btn btn-sm btn-secondary sidebar-btn" style="cursor:pointer">
                 &#128194; Restore Backup
                 <input type="file" id="restore-file" accept=".json" style="display:none">
@@ -63,6 +64,7 @@
                 <p>Select a repertoire from the sidebar to start training.</p>
                 <p class="text-muted">Or create a new one / import a PGN file.</p>
                 <div id="restore-status" style="display:none"></div>
+                <div id="storage-status"></div>
             </div>
         </div>
 
@@ -118,6 +120,7 @@
             <div class="workspace-tabs">
                 <button class="tab-btn active" id="tab-train" data-tab="trainer">Train</button>
                 <button class="tab-btn" id="tab-explore" data-tab="explorer">Explore</button>
+                <button class="tab-btn" id="tab-sandbox" data-tab="sandbox" style="display:none">Sandbox</button>
             </div>
 
             <div class="workspace-grid">
@@ -131,6 +134,14 @@
                         <button class="btn btn-sm btn-secondary" id="btn-explorer-back" title="Undo (Left Arrow)">&#8592; Back</button>
                         <button class="btn btn-sm btn-secondary" id="btn-explorer-reset">Reset</button>
                         <button class="btn btn-sm btn-secondary" id="btn-explorer-flip" title="Flip board (F)">Flip</button>
+                    </div>
+
+                    <!-- Sandbox controls -->
+                    <div class="board-controls" id="sandbox-controls" style="display:none">
+                        <button class="btn btn-sm btn-secondary" id="btn-sandbox-back" title="Undo (Left Arrow)">&#8592; Undo</button>
+                        <button class="btn btn-sm btn-secondary" id="btn-sandbox-forward" title="Redo (Right Arrow)">Redo &#8594;</button>
+                        <button class="btn btn-sm btn-secondary" id="btn-sandbox-reset">Reset</button>
+                        <button class="btn btn-sm btn-secondary" id="btn-sandbox-flip" title="Flip board (F)">Flip</button>
                     </div>
 
                     <!-- Trainer controls -->
@@ -158,13 +169,13 @@
                             <!-- Engine Analysis -->
                             <div id="engine-section" class="engine-section">
                                 <div class="engine-header">
-                                    <span class="section-label" style="margin:0">Engine</span>
+                                    <span class="section-label" style="margin:0" id="engine-name-label">Engine</span>
                                     <button class="btn btn-sm btn-icon" id="btn-engine-toggle" title="Toggle engine (E)">&#9881;</button>
                                 </div>
                                 <div id="engine-content" style="display:none">
                                     <div class="eval-bar" id="engine-eval-bar">
                                         <div class="eval-bar-fill" id="engine-eval-fill" style="width:50%"></div>
-                                        <span class="eval-score" id="engine-score">0.00</span>
+                                        <span class="eval-score" id="engine-score">—</span>
                                     </div>
                                     <div id="engine-pv" class="engine-pv"></div>
                                     <div id="engine-depth" class="engine-depth"></div>
@@ -187,6 +198,47 @@
                                 <button class="btn btn-sm btn-icon" id="btn-tree-expand-all" title="Expand all">&#9654;</button>
                             </h4>
                             <div id="explorer-tree-view" class="tree-view-container"></div>
+                        </div>
+                    </div>
+
+                    <!-- Sandbox Panel -->
+                    <div class="panel" id="sandbox-panel" style="display:none">
+                        <div class="panel-header">
+                            <h3>Sandbox</h3>
+                            <div class="stats-row"><span class="text-muted" style="font-size:0.78rem">Free practice — no repertoire</span></div>
+                        </div>
+                        <div class="panel-body">
+                            <div id="sandbox-opening" class="opening-label"></div>
+
+                            <!-- Engine -->
+                            <div id="sandbox-engine-section" class="engine-section">
+                                <div class="engine-header">
+                                    <span class="section-label" style="margin:0" id="sandbox-engine-name-label">Engine</span>
+                                    <button class="btn btn-sm btn-icon" id="btn-sandbox-engine-toggle" title="Toggle engine (E)">&#9881;</button>
+                                </div>
+                                <div id="sandbox-engine-content" style="display:none">
+                                    <div class="eval-bar">
+                                        <div class="eval-bar-fill" id="sandbox-engine-eval-fill" style="width:50%"></div>
+                                        <span class="eval-score" id="sandbox-engine-score">—</span>
+                                    </div>
+                                    <div id="sandbox-engine-pv" class="engine-pv"></div>
+                                    <div id="sandbox-engine-depth" class="engine-depth"></div>
+                                </div>
+                            </div>
+
+                            <h4 class="section-label">Move List</h4>
+                            <div id="sandbox-moves" class="move-list"></div>
+
+                            <h4 class="section-label">Position</h4>
+                            <div class="sandbox-fen-row">
+                                <input type="text" id="sandbox-fen-input" class="sandbox-fen-input" placeholder="FEN..." spellcheck="false">
+                                <button class="btn btn-sm btn-secondary" id="btn-sandbox-load-fen">Load</button>
+                            </div>
+                            <div class="sandbox-actions">
+                                <button class="btn btn-sm btn-secondary" id="btn-sandbox-copy-fen">&#128203; FEN</button>
+                                <button class="btn btn-sm btn-secondary" id="btn-sandbox-copy-pgn">&#128203; PGN</button>
+                                <button class="btn btn-sm btn-secondary" id="btn-sandbox-save-rep" title="Save as new repertoire">&#128190; Save</button>
+                            </div>
                         </div>
                     </div>
 

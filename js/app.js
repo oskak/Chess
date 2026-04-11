@@ -33,8 +33,42 @@ class App {
     async init() {
         this._initBoard();
         this._bindEvents();
+
+        // Request persistent storage (prevents browser eviction)
+        const persistent = await this.db.requestPersistentStorage();
+        console.log('Persistent storage:', persistent ? 'GRANTED' : 'not granted');
+
         await this._loadSidebar();
+        await this._updateStorageStatus();
         this._showView('welcome');
+    }
+
+    /**
+     * Show storage usage and persistence status on welcome screen.
+     */
+    async _updateStorageStatus() {
+        const el = document.getElementById('storage-status');
+        if (!el) return;
+
+        try {
+            const est = await this.db.getStorageEstimate();
+            const isPersistent = navigator.storage && navigator.storage.persisted
+                ? await navigator.storage.persisted()
+                : false;
+
+            if (est) {
+                const percent = Math.round((est.usage / est.quota) * 100);
+                el.innerHTML = `
+                    <div class="storage-info">
+                        <div><strong>Storage:</strong> ${est.usageMB} MB used of ${est.quotaMB} MB available (${percent}%)</div>
+                        <div><strong>Persistent:</strong> ${isPersistent ? '\u2705 Yes — data is safe from browser eviction' : '\u26A0\uFE0F No — data may be cleared if storage is low'}</div>
+                        <div class="storage-hint">Your data is saved locally in this browser via IndexedDB. Use <strong>Backup All</strong> regularly to keep a copy on disk (especially before clearing browser data).</div>
+                    </div>
+                `;
+            }
+        } catch (e) {
+            console.warn('Storage estimate failed:', e);
+        }
     }
 
     // ===================== BOARD =====================
@@ -61,6 +95,15 @@ class App {
 
     _onDragStart(source, piece, position, orientation) {
         if (this.chess.game_over()) return false;
+
+        // In sandbox: allow any legal move for either side
+        if (this.view === 'sandbox') {
+            if ((this.chess.turn() === 'w' && piece.search(/^b/) !== -1) ||
+                (this.chess.turn() === 'b' && piece.search(/^w/) !== -1)) {
+                return false;
+            }
+            return true;
+        }
 
         // In explorer mode: allow any move
         if (this.view === 'explorer') {
@@ -102,6 +145,10 @@ class App {
 
         if (this.view === 'trainer') {
             return this._onTrainerDrop(source, target, promotion);
+        }
+
+        if (this.view === 'sandbox') {
+            return this._onSandboxDrop(source, target, promotion);
         }
 
         return 'snapback';
@@ -385,23 +432,30 @@ class App {
         this.engineEnabled = !this.engineEnabled;
         const content = document.getElementById('engine-content');
         const btn = document.getElementById('btn-engine-toggle');
+        const nameLabel = document.getElementById('engine-name-label');
 
         if (this.engineEnabled) {
             if (!this.engine) {
                 this.engine = new ChessEngine();
                 try {
-                    btn.textContent = '⏳';
+                    btn.textContent = '\u29D7'; // Hourglass
+                    if (nameLabel) nameLabel.textContent = 'Loading engine...';
+                    if (content) content.style.display = 'block';
                     await this.engine.init();
-                    console.log('Stockfish engine ready');
+                    console.log('Engine ready:', this.engine.name);
+                    if (nameLabel) nameLabel.textContent = this.engine.name || 'Stockfish';
                 } catch (e) {
                     console.error('Engine init failed:', e);
                     this.engineEnabled = false;
                     this.engine = null;
                     btn.textContent = '\u2699';
                     btn.title = 'Engine failed: ' + e.message;
+                    if (nameLabel) nameLabel.textContent = 'Engine FAILED — see console';
                     if (content) content.style.display = 'none';
                     return;
                 }
+            } else if (nameLabel) {
+                nameLabel.textContent = this.engine.name || 'Stockfish';
             }
             content.style.display = 'block';
             btn.classList.add('active');
@@ -682,6 +736,245 @@ class App {
         this._saveCurrentRepertoire();
     }
 
+    // ===================== SANDBOX MODE =====================
+
+    _enterSandbox() {
+        this.sandboxMoveStack = [];
+        this.sandboxRedoStack = [];
+        this.currentRepertoireId = null;
+        this._showView('sandbox');
+        this.chess.reset();
+        this.board.position('start');
+        this._clearAllSquareEffects();
+        this._updateSandboxUI();
+    }
+
+    _onSandboxDrop(source, target, promotion) {
+        const moveObj = { from: source, to: target };
+        if (promotion) moveObj.promotion = promotion;
+
+        const move = this.chess.move(moveObj);
+        if (!move) return 'snapback';
+
+        if (move.captured) {
+            this.sounds.playCapture();
+        } else {
+            this.sounds.playMove();
+        }
+
+        this.sandboxMoveStack.push(move);
+        this.sandboxRedoStack = []; // Clear redo after new move
+        this._updateSandboxUI();
+        this._highlightMove(move, 'last');
+
+        if (this.chess.in_check()) this.sounds.playCheck();
+    }
+
+    _sandboxUndo() {
+        if (this.sandboxMoveStack.length === 0) return;
+        const move = this.chess.undo();
+        if (move) {
+            this.sandboxMoveStack.pop();
+            this.sandboxRedoStack.push(move);
+            this.board.position(this.chess.fen());
+            this._clearAllSquareEffects();
+            this._updateSandboxUI();
+            this.sounds.playMove();
+        }
+    }
+
+    _sandboxRedo() {
+        if (this.sandboxRedoStack.length === 0) return;
+        const move = this.sandboxRedoStack.pop();
+        const done = this.chess.move({ from: move.from, to: move.to, promotion: move.promotion });
+        if (done) {
+            this.sandboxMoveStack.push(done);
+            this.board.position(this.chess.fen());
+            this._clearAllSquareEffects();
+            this._updateSandboxUI();
+            this._highlightMove(done, 'last');
+            this.sounds.playMove();
+        }
+    }
+
+    _sandboxReset() {
+        this.chess.reset();
+        this.sandboxMoveStack = [];
+        this.sandboxRedoStack = [];
+        this.board.position('start');
+        this._clearAllSquareEffects();
+        this._updateSandboxUI();
+    }
+
+    _sandboxLoadFen(fen) {
+        const tempChess = new Chess();
+        if (!tempChess.load(fen)) {
+            alert('Invalid FEN');
+            return;
+        }
+        this.chess.load(fen);
+        this.sandboxMoveStack = [];
+        this.sandboxRedoStack = [];
+        this.board.position(this.chess.fen());
+        this._clearAllSquareEffects();
+        this._updateSandboxUI();
+    }
+
+    _updateSandboxUI() {
+        // ECO
+        const ecoEl = document.getElementById('sandbox-opening');
+        if (ecoEl) {
+            const eco = lookupECO(this.chess.fen());
+            ecoEl.innerHTML = eco ? (eco.code ? `<span class="eco-code">${eco.code}</span>${eco.name}` : eco.name) : '';
+        }
+
+        // Move list
+        const movesEl = document.getElementById('sandbox-moves');
+        if (movesEl) {
+            movesEl.innerHTML = this._formatMoveHistory();
+        }
+
+        // FEN input
+        const fenInput = document.getElementById('sandbox-fen-input');
+        if (fenInput && document.activeElement !== fenInput) {
+            fenInput.value = this.chess.fen();
+        }
+
+        // Engine update
+        this._updateSandboxEngineEval();
+    }
+
+    _updateSandboxEngineEval() {
+        if (!this.sandboxEngineEnabled || !this.engine || this.view !== 'sandbox') return;
+
+        clearTimeout(this._sandboxEngineDebounce);
+        this._sandboxEngineDebounce = setTimeout(async () => {
+            const fen = this.chess.fen();
+            const fillEl = document.getElementById('sandbox-engine-eval-fill');
+            const scoreEl = document.getElementById('sandbox-engine-score');
+            const pvEl = document.getElementById('sandbox-engine-pv');
+            const depthEl = document.getElementById('sandbox-engine-depth');
+
+            this.engine.onInfo = (info) => {
+                if (fillEl) fillEl.style.width = ChessEngine.getBarPercent(info) + '%';
+                if (scoreEl) scoreEl.textContent = ChessEngine.formatScore(info);
+                if (depthEl) depthEl.textContent = `depth ${info.depth}`;
+            };
+
+            try {
+                const result = await this.engine.evaluate(fen, 18);
+                if (!result) return;
+                if (fillEl) fillEl.style.width = ChessEngine.getBarPercent(result) + '%';
+                if (scoreEl) scoreEl.textContent = ChessEngine.formatScore(result);
+                if (depthEl) depthEl.textContent = `depth ${result.depth}`;
+                if (pvEl && result.pv && result.pv.length > 0) {
+                    const tempChess = new Chess(fen);
+                    const pvSan = [];
+                    for (let i = 0; i < Math.min(result.pv.length, 6); i++) {
+                        const san = ChessEngine.uciToSan(tempChess, result.pv[i]);
+                        const move = tempChess.move(san, { sloppy: true });
+                        if (!move) break;
+                        pvSan.push(this._toFigurine(move.san));
+                    }
+                    pvEl.textContent = pvSan.join(' ');
+                }
+            } catch (e) {
+                console.error('Sandbox engine eval error:', e);
+            }
+        }, 400);
+    }
+
+    async _toggleSandboxEngine() {
+        this.sandboxEngineEnabled = !this.sandboxEngineEnabled;
+        const content = document.getElementById('sandbox-engine-content');
+        const btn = document.getElementById('btn-sandbox-engine-toggle');
+        const nameLabel = document.getElementById('sandbox-engine-name-label');
+
+        if (this.sandboxEngineEnabled) {
+            if (!this.engine) {
+                this.engine = new ChessEngine();
+                try {
+                    btn.textContent = '\u29D7';
+                    if (nameLabel) nameLabel.textContent = 'Loading engine...';
+                    if (content) content.style.display = 'block';
+                    await this.engine.init();
+                    if (nameLabel) nameLabel.textContent = this.engine.name || 'Stockfish';
+                } catch (e) {
+                    console.error('Engine init failed:', e);
+                    this.sandboxEngineEnabled = false;
+                    this.engine = null;
+                    btn.textContent = '\u2699';
+                    if (nameLabel) nameLabel.textContent = 'Engine FAILED — see console';
+                    if (content) content.style.display = 'none';
+                    return;
+                }
+            } else if (nameLabel) {
+                nameLabel.textContent = this.engine.name || 'Stockfish';
+            }
+            content.style.display = 'block';
+            btn.classList.add('active');
+            this._updateSandboxEngineEval();
+        } else {
+            content.style.display = 'none';
+            btn.classList.remove('active');
+            if (this.engine) this.engine.stop();
+        }
+    }
+
+    _sandboxCopyFen() {
+        const fen = this.chess.fen();
+        navigator.clipboard.writeText(fen).then(() => {
+            this._toast('FEN copied');
+        });
+    }
+
+    _sandboxCopyPgn() {
+        const pgn = this.chess.pgn();
+        navigator.clipboard.writeText(pgn).then(() => {
+            this._toast('PGN copied');
+        });
+    }
+
+    _sandboxSaveAsRepertoire() {
+        if (this.sandboxMoveStack.length === 0) {
+            alert('No moves to save');
+            return;
+        }
+        const name = prompt('Repertoire name:', 'Sandbox line');
+        if (!name) return;
+        const color = this.sandboxMoveStack[0].color === 'w' ? 'white' : 'black';
+
+        const tree = new MoveTree(name, color);
+        let node = tree.root;
+        const tempChess = new Chess();
+        for (const move of this.sandboxMoveStack) {
+            const san = move.san;
+            const done = tempChess.move(san);
+            if (!done) break;
+            const child = node.addChild(san);
+            child.fen = tempChess.fen().split(' ').slice(0, 4).join(' ');
+            node = child;
+        }
+        tree.rebuildPositionIndex();
+
+        this.db.saveRepertoire(tree).then((id) => {
+            this._toast('Saved as repertoire');
+            this._loadSidebar();
+        });
+    }
+
+    _toast(msg) {
+        // Simple toast using existing notification infrastructure or just alert
+        const existing = document.getElementById('toast-message');
+        if (existing) existing.remove();
+        const toast = document.createElement('div');
+        toast.id = 'toast-message';
+        toast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--bg-card);border:1px solid var(--accent);color:var(--text-primary);padding:10px 20px;border-radius:6px;z-index:500;box-shadow:0 4px 16px var(--shadow);';
+        toast.textContent = msg;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 2000);
+    }
+
     _formatMoveHistory() {
         const moves = this.chess.history();
         let html = '';
@@ -908,10 +1201,15 @@ class App {
         const workspace = document.getElementById('workspace');
         const explorerPanel = document.getElementById('explorer-panel');
         const trainerPanel = document.getElementById('trainer-panel');
+        const sandboxPanel = document.getElementById('sandbox-panel');
         const explorerControls = document.getElementById('explorer-controls');
         const trainerControls = document.getElementById('trainer-controls');
+        const sandboxControls = document.getElementById('sandbox-controls');
+        const tabSandbox = document.getElementById('tab-sandbox');
+        const tabTrain = document.getElementById('tab-train');
+        const tabExplore = document.getElementById('tab-explore');
 
-        if (viewName === 'explorer' || viewName === 'trainer') {
+        if (viewName === 'explorer' || viewName === 'trainer' || viewName === 'sandbox') {
             // Show workspace
             workspace.style.display = 'flex';
             workspace.classList.add('active');
@@ -919,12 +1217,23 @@ class App {
             // Toggle panels and controls
             explorerPanel.style.display = viewName === 'explorer' ? 'block' : 'none';
             trainerPanel.style.display = viewName === 'trainer' ? 'block' : 'none';
+            if (sandboxPanel) sandboxPanel.style.display = viewName === 'sandbox' ? 'block' : 'none';
             explorerControls.style.display = viewName === 'explorer' ? 'flex' : 'none';
             trainerControls.style.display = viewName === 'trainer' ? 'flex' : 'none';
+            if (sandboxControls) sandboxControls.style.display = viewName === 'sandbox' ? 'flex' : 'none';
 
-            // Update tabs
-            document.getElementById('tab-train')?.classList.toggle('active', viewName === 'trainer');
-            document.getElementById('tab-explore')?.classList.toggle('active', viewName === 'explorer');
+            // Update tabs - sandbox hides repertoire tabs
+            if (viewName === 'sandbox') {
+                tabTrain.style.display = 'none';
+                tabExplore.style.display = 'none';
+                if (tabSandbox) { tabSandbox.style.display = ''; tabSandbox.classList.add('active'); }
+            } else {
+                tabTrain.style.display = '';
+                tabExplore.style.display = '';
+                if (tabSandbox) { tabSandbox.style.display = 'none'; tabSandbox.classList.remove('active'); }
+                tabTrain.classList.toggle('active', viewName === 'trainer');
+                tabExplore.classList.toggle('active', viewName === 'explorer');
+            }
 
             // Resize board after layout
             setTimeout(() => {
@@ -1320,6 +1629,29 @@ class App {
             this._toggleEngine();
         });
 
+        // Sandbox bindings
+        document.getElementById('btn-sandbox')?.addEventListener('click', () => {
+            this._enterSandbox();
+        });
+        document.getElementById('btn-sandbox-back')?.addEventListener('click', () => this._sandboxUndo());
+        document.getElementById('btn-sandbox-forward')?.addEventListener('click', () => this._sandboxRedo());
+        document.getElementById('btn-sandbox-reset')?.addEventListener('click', () => this._sandboxReset());
+        document.getElementById('btn-sandbox-flip')?.addEventListener('click', () => this.board.flip());
+        document.getElementById('btn-sandbox-load-fen')?.addEventListener('click', () => {
+            const fen = document.getElementById('sandbox-fen-input').value.trim();
+            if (fen) this._sandboxLoadFen(fen);
+        });
+        document.getElementById('sandbox-fen-input')?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const fen = e.target.value.trim();
+                if (fen) this._sandboxLoadFen(fen);
+            }
+        });
+        document.getElementById('btn-sandbox-copy-fen')?.addEventListener('click', () => this._sandboxCopyFen());
+        document.getElementById('btn-sandbox-copy-pgn')?.addEventListener('click', () => this._sandboxCopyPgn());
+        document.getElementById('btn-sandbox-save-rep')?.addEventListener('click', () => this._sandboxSaveAsRepertoire());
+        document.getElementById('btn-sandbox-engine-toggle')?.addEventListener('click', () => this._toggleSandboxEngine());
+
         // Tree view controls
         document.getElementById('btn-tree-collapse-all')?.addEventListener('click', () => {
             if (this.currentTree) {
@@ -1427,6 +1759,10 @@ class App {
             switch (e.key) {
                 case 'ArrowLeft':
                     if (this.view === 'explorer') this._explorerUndo();
+                    else if (this.view === 'sandbox') this._sandboxUndo();
+                    break;
+                case 'ArrowRight':
+                    if (this.view === 'sandbox') this._sandboxRedo();
                     break;
                 case 'f':
                     this.board.flip();
@@ -1449,6 +1785,8 @@ class App {
                 case 'e':
                     if (this.view === 'explorer') {
                         this._toggleEngine();
+                    } else if (this.view === 'sandbox') {
+                        this._toggleSandboxEngine();
                     }
                     break;
             }

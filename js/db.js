@@ -14,6 +14,24 @@ class RepertoireDB {
         this.db = null;
     }
 
+    /**
+     * Request persistent storage so browser won't evict data under pressure.
+     * Returns true if granted. Call once at app startup.
+     */
+    async requestPersistentStorage() {
+        if (navigator.storage && navigator.storage.persist) {
+            try {
+                const isPersistent = await navigator.storage.persisted();
+                if (isPersistent) return true;
+                return await navigator.storage.persist();
+            } catch (e) {
+                console.warn('Persistent storage request failed:', e);
+                return false;
+            }
+        }
+        return false;
+    }
+
     async open() {
         if (this.db) return this.db;
 
