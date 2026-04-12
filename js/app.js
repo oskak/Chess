@@ -26,20 +26,44 @@ class App {
         this.pgnWorker = null;
         this.engine = null;
         this.engineEnabled = false;
+        this.sandboxEngineEnabled = false;
         this._engineDebounce = null;
+        this._sandboxEngineDebounce = null;
         this._contextMenuNode = null;
+        this.useFigurine = this._detectFigurineSupport();
     }
 
     async init() {
-        this._initBoard();
-        this._bindEvents();
+        try {
+            this._initBoard();
+        } catch (e) {
+            console.error('Board init failed:', e);
+            document.getElementById('board').innerHTML =
+                '<div style="padding:20px;color:red;">Board failed to load: ' + e.message + '</div>';
+        }
+
+        try {
+            this._bindEvents();
+        } catch (e) {
+            console.error('Event binding failed:', e);
+        }
 
         // Request persistent storage (prevents browser eviction)
-        const persistent = await this.db.requestPersistentStorage();
-        console.log('Persistent storage:', persistent ? 'GRANTED' : 'not granted');
+        try {
+            const persistent = await this.db.requestPersistentStorage();
+            console.log('Persistent storage:', persistent ? 'GRANTED' : 'not granted');
+        } catch (e) {
+            console.warn('Persistent storage request failed:', e);
+        }
 
         await this._loadSidebar();
-        await this._updateStorageStatus();
+
+        try {
+            await this._updateStorageStatus();
+        } catch (e) {
+            console.warn('Storage status update failed:', e);
+        }
+
         this._showView('welcome');
     }
 
@@ -68,6 +92,25 @@ class App {
             }
         } catch (e) {
             console.warn('Storage estimate failed:', e);
+        }
+    }
+
+    /**
+     * Detect if browser/OS can render chess figurine Unicode symbols.
+     */
+    _detectFigurineSupport() {
+        try {
+            const canvas = document.createElement('canvas');
+            canvas.width = 20;
+            canvas.height = 20;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return false;
+            ctx.font = '16px serif';
+            const metrics = ctx.measureText('\u2654'); // White King
+            // If width is very small or zero, the symbol likely renders as a box
+            return metrics.width > 4;
+        } catch (e) {
+            return false;
         }
     }
 
@@ -992,7 +1035,13 @@ class App {
      * Convert SAN to figurine algebraic notation using Unicode chess symbols.
      * K→♔ Q→♕ R→♖ B→♗ N→♘
      */
+    /**
+     * Convert SAN to figurine algebraic notation using Unicode chess symbols.
+     * K→♔ Q→♕ R→♖ B→♗ N→♘
+     * Falls back to plain text if figurine rendering fails.
+     */
     _toFigurine(san) {
+        if (!this.useFigurine) return san;
         const map = { K: '\u2654', Q: '\u2655', R: '\u2656', B: '\u2657', N: '\u2658' };
         if (san.length > 1 && map[san[0]]) {
             return map[san[0]] + san.substring(1);

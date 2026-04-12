@@ -28,7 +28,7 @@
     --border: #1e3048;
     --border-light: #2a4060;
     --shadow: rgba(0, 0, 0, 0.4);
-    --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --font: 'Segoe UI', system-ui, -apple-system, 'Noto Sans', sans-serif;
     --radius: 10px;
     --radius-sm: 6px;
     --header-h: 48px;

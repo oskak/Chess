@@ -33,8 +33,19 @@ class ChessEngine {
             }, 10000);
 
             try {
-                console.log('Loading Stockfish 18 (lite-single WASM)...');
-                this.worker = new Worker('vendor/stockfish/stockfish.js');
+                // Resolve correct path for both browser and Electron
+                let workerPath = 'vendor/stockfish/stockfish.js';
+                if (typeof window !== 'undefined' && window.location.protocol === 'file:') {
+                    // In Electron/file:// context, use absolute path
+                    const base = window.location.pathname.replace(/[^/\\]*$/, '');
+                    workerPath = base + workerPath;
+                    // On Windows, remove leading slash from /C:/...
+                    if (/^\/[A-Z]:/.test(workerPath)) {
+                        workerPath = workerPath.substring(1);
+                    }
+                }
+                console.log('Loading Stockfish 18 (lite-single WASM) from:', workerPath);
+                this.worker = new Worker(workerPath);
             } catch (e) {
                 clearTimeout(timeout);
                 reject(new Error('Failed to create Stockfish worker: ' + e.message));
