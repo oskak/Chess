@@ -30,6 +30,8 @@ class App {
         this._engineDebounce = null;
         this._sandboxEngineDebounce = null;
         this._contextMenuNode = null;
+        this.sandboxMoveStack = [];
+        this.sandboxRedoStack = [];
         this.useFigurine = this._detectFigurineSupport();
     }
 
@@ -286,10 +288,16 @@ class App {
                     newNode.fen = this.chess.fen().split(' ').slice(0, 4).join(' ');
                     this.currentNode = newNode;
                     this.currentTree._dirty = true;
+                    this.currentTree.rebuildPositionIndex();
                     this._saveCurrentRepertoire();
                     this._renderTreeView();
                 } else {
-                    this.currentNode = null;
+                    // User declined - undo the move to keep state consistent
+                    this.chess.undo();
+                    this.explorerMoveStack.pop();
+                    this.board.position(this.chess.fen());
+                    this._clearAllSquareEffects();
+                    return 'snapback';
                 }
             }
         }
@@ -624,10 +632,12 @@ class App {
     }
 
     _bindTreeEvents(container) {
+        if (!this.currentTree) return;
         // Chevron click - toggle collapse
         container.querySelectorAll('.tree-chevron[data-path]').forEach(el => {
             el.addEventListener('click', (e) => {
                 e.stopPropagation();
+                if (!this.currentTree) return;
                 const path = el.dataset.path.split(',').filter(Boolean);
                 const node = this.currentTree.getNodeAt(path);
                 if (node) {
@@ -648,6 +658,7 @@ class App {
             // Right-click context menu
             el.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
+                if (!this.currentTree) return;
                 const path = el.dataset.path.split(',').filter(Boolean);
                 const node = this.currentTree.getNodeAt(path);
                 if (node) this._showContextMenu(e.clientX, e.clientY, node);
@@ -658,6 +669,7 @@ class App {
         container.querySelectorAll('.tree-toggle-btn').forEach(el => {
             el.addEventListener('click', (e) => {
                 e.stopPropagation();
+                if (!this.currentTree) return;
                 const path = el.dataset.path.split(',').filter(Boolean);
                 const node = this.currentTree.getNodeAt(path);
                 if (node) {
@@ -671,6 +683,7 @@ class App {
         // "More" links
         container.querySelectorAll('.tree-more[data-expand-path]').forEach(el => {
             el.addEventListener('click', () => {
+                if (!this.currentTree) return;
                 const path = el.dataset.expandPath.split(',').filter(Boolean);
                 const node = this.currentTree.getNodeAt(path);
                 if (node) {
@@ -682,6 +695,7 @@ class App {
     }
 
     _navigateToPath(movePath) {
+        if (!this.currentTree) return;
         this.chess.reset();
         this.currentNode = this.currentTree.root;
         this.explorerMoveStack = [];
@@ -785,6 +799,9 @@ class App {
         this.sandboxMoveStack = [];
         this.sandboxRedoStack = [];
         this.currentRepertoireId = null;
+        this.currentTree = null;
+        this.currentNode = null;
+        this._updateSidebarSelection();
         this._showView('sandbox');
         this.chess.reset();
         this.board.position('start');
@@ -985,7 +1002,10 @@ class App {
         }
         const name = prompt('Repertoire name:', 'Sandbox line');
         if (!name) return;
-        const color = this.sandboxMoveStack[0].color === 'w' ? 'white' : 'black';
+
+        const colorInput = prompt('Which color are you playing? (w/b)', 'w');
+        if (!colorInput) return;
+        const color = colorInput.toLowerCase().startsWith('b') ? 'black' : 'white';
 
         const tree = new MoveTree(name, color);
         let node = tree.root;
@@ -1000,9 +1020,12 @@ class App {
         }
         tree.rebuildPositionIndex();
 
-        this.db.saveRepertoire(tree).then((id) => {
+        this.db.saveRepertoire(tree).then(() => {
             this._toast('Saved as repertoire');
             this._loadSidebar();
+        }).catch(e => {
+            console.error('Save failed:', e);
+            alert('Save failed: ' + e.message);
         });
     }
 
