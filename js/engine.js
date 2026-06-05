@@ -18,6 +18,7 @@ class ChessEngine {
         this.onInfo = null;          // Callback for intermediate info updates
         this.debug = false;          // Toggle console logging of raw UCI messages
         this.name = 'Stockfish';     // Engine name from UCI id
+        this.evalTimeoutMs = 20000;  // Watchdog: max wait for a 'bestmove' reply
     }
 
     /**
@@ -212,14 +213,30 @@ class ChessEngine {
         return new Promise((resolve) => {
             this.evaluating = true;
             this._currentEval = null;
-            this._resolveEval = (result) => {
-                // Cache the result
-                if (this.cache.size >= this.maxCacheSize) {
-                    // Remove oldest entry
-                    const firstKey = this.cache.keys().next().value;
-                    this.cache.delete(firstKey);
+
+            // Safety timeout: if the worker never replies with 'bestmove'
+            // (crashed/wedged), don't hang forever — resolve with whatever
+            // partial info we have (or null) and reset state.
+            const watchdog = setTimeout(() => {
+                if (this._resolveEval) {
+                    const partial = this._currentEval;
+                    this._resolveEval = null;
+                    this.evaluating = false;
+                    resolve(partial || null);
                 }
-                this.cache.set(cacheKey, result);
+            }, this.evalTimeoutMs);
+
+            this._resolveEval = (result) => {
+                clearTimeout(watchdog);
+                // Cache the result
+                if (result) {
+                    if (this.cache.size >= this.maxCacheSize) {
+                        // Remove oldest entry
+                        const firstKey = this.cache.keys().next().value;
+                        this.cache.delete(firstKey);
+                    }
+                    this.cache.set(cacheKey, result);
+                }
                 resolve(result);
             };
 

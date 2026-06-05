@@ -334,5 +334,74 @@ section('12. DB — save/load & backup round-trip (fake-indexeddb)');
         check('DB suite runs without throwing', false, e.message + '\n' + e.stack);
     }
 
+    // ============================================================
+    section('13. Hardening — deserialize survives corrupt data');
+    // ============================================================
+    {
+        // null / non-object input must not throw
+        let ok = true;
+        try { MoveTree.deserialize(null); MoveTree.deserialize(undefined); MoveTree.deserialize(42); }
+        catch (e) { ok = false; }
+        check('deserialize(null/garbage) does not throw', ok);
+
+        // missing name/color → defaults
+        const t1 = MoveTree.deserialize({ tree: {} });
+        check('missing name → default string', typeof t1.name === 'string' && t1.name.length > 0, t1.name);
+        check('invalid color → white', t1.color === 'white', t1.color);
+
+        // corrupt stats array (NaN, strings, wrong length, correct>attempts)
+        const corrupt = {
+            name: 'Corrupt', color: 'white',
+            tree: { c: { e4: { s: [NaN, 'x', null, null, -5, 0.1, NaN], c: {} } } }
+        };
+        let t2;
+        try { t2 = MoveTree.deserialize(corrupt); }
+        catch (e) { check('deserialize(corrupt stats) does not throw', false, e.message); }
+        if (t2) {
+            const n = t2.getNodeAt(['e4']);
+            check('corrupt stats sanitized to finite', n &&
+                Number.isFinite(n.stats.attempts) && Number.isFinite(n.stats.correct) &&
+                Number.isFinite(n.stats.ease) && Number.isFinite(n.stats.streak),
+                n && JSON.stringify(n.stats));
+            check('ease floored to ≥ 1.3', n && n.stats.ease >= 1.3, n && n.stats.ease);
+            check('interval not negative', n && n.stats.interval >= 0, n && n.stats.interval);
+        }
+
+        // accuracy must never be NaN even with weird stats
+        const t3 = MoveTree.deserialize({ name: 'A', color: 'white', tree: { c: { e4: { s: [0, 5, null, null, 0, 2.5, 0] } } } });
+        const acc = MoveTree.getNodeAccuracy(t3.getNodeAt(['e4']));
+        check('accuracy is null or a finite number', acc === null || Number.isFinite(acc), String(acc));
+    }
+
+    // ============================================================
+    section('14. Hardening — PGN reports skipped illegal moves');
+    // ============================================================
+    {
+        // "Nf3" after 1.e4 e5 is fine; "Zz9" is illegal and must be counted, not silently dropped
+        const tree = PGNParser.parse('1. e4 e5 2. Nf3 Zz9 3. Bb5', { repertoireName: 'Bad', color: 'white' })[0];
+        check('valid prefix still imported', !!tree.getNodeAt(['e4', 'e5', 'Nf3']), 'Nf3 missing');
+        check('illegal move counted as skipped', (tree._skippedMoves || 0) >= 1, 'skipped=' + tree._skippedMoves);
+
+        // clean PGN reports zero skipped
+        const clean = PGNParser.parse('1. e4 e5 2. Nf3 Nc6', { repertoireName: 'Clean', color: 'white' })[0];
+        check('clean PGN has no skipped moves', !clean._skippedMoves, 'skipped=' + clean._skippedMoves);
+    }
+
+    // ============================================================
+    section('15. Hardening — engine watchdog resolves (no hang)');
+    // ============================================================
+    {
+        const eng = new ChessEngine();
+        eng.ready = true;                 // pretend initialized
+        eng.evalTimeoutMs = 60;           // fast watchdog for the test
+        eng._send = () => {};             // worker that never replies
+        const start = Date.now();
+        const result = await eng.evaluate('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', 18);
+        const elapsed = Date.now() - start;
+        check('evaluate resolves instead of hanging', result === null, JSON.stringify(result));
+        check('watchdog fired within reasonable time', elapsed < 2000, elapsed + 'ms');
+        check('engine not left in evaluating state', eng.evaluating === false, String(eng.evaluating));
+    }
+
     process.exit(report());
 })();

@@ -468,6 +468,11 @@ class PGNParser {
                                 }
                             }
                         }
+                    } else {
+                        // Illegal/unknown move — don't silently lose it; record a
+                        // count so the importer can warn the user instead of
+                        // truncating the line without any feedback.
+                        if (tree) tree._skippedMoves = (tree._skippedMoves || 0) + 1;
                     }
                     i++;
                     break;

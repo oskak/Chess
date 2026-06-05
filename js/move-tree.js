@@ -484,38 +484,67 @@ class MoveTree {
     }
 
     static deserialize(data) {
-        const tree = new MoveTree(data.name, data.color);
+        // Defensive: a corrupt/empty record must never throw and make a
+        // repertoire permanently inaccessible. Fall back to sane defaults.
+        if (!data || typeof data !== 'object') {
+            return new MoveTree('Recovered', 'white');
+        }
+        const tree = new MoveTree(
+            typeof data.name === 'string' ? data.name : 'Untitled',
+            data.color === 'black' ? 'black' : 'white'
+        );
         tree.id = data.id;
         tree.createdAt = data.createdAt;
         tree.updatedAt = data.updatedAt;
-        tree.metadata = data.metadata || {};
-        tree._deserializeNode(tree.root, data.tree);
+        tree.metadata = (data.metadata && typeof data.metadata === 'object') ? data.metadata : {};
+        try {
+            if (data.tree && typeof data.tree === 'object') {
+                tree._deserializeNode(tree.root, data.tree);
+            }
+        } catch (e) {
+            // Keep whatever was successfully parsed rather than losing everything.
+            console.error('MoveTree.deserialize: partial tree recovered after error:', e);
+        }
         tree._dirty = true;
         tree.rebuildPositionIndex();
         return tree;
     }
 
+    // Coerce a stored value to a finite number, or fall back.
+    static _num(v, fallback) {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : fallback;
+    }
+
     _deserializeNode(node, data) {
-        if (data.a) node.comment = data.a;
-        if (data.n) node.nags = data.n;
-        if (data.p !== undefined) node.priority = data.p;
-        if (data.f) node.fen = data.f;
+        if (!data || typeof data !== 'object') return;
+        if (typeof data.a === 'string') node.comment = data.a;
+        if (Array.isArray(data.n)) node.nags = data.n;
+        if (data.p !== undefined) node.priority = MoveTree._num(data.p, 0);
+        if (typeof data.f === 'string') node.fen = data.f;
         if (data.t) node.isTransposition = true;
         if (data.e === 0) node.enabled = false;
         if (data.cl) node.collapsed = true;
-        if (data.s) {
+        if (Array.isArray(data.s)) {
+            const s = data.s;
             node.stats = {
-                attempts: data.s[0],
-                correct: data.s[1],
-                lastReviewed: data.s[2],
-                nextReview: data.s[3],
-                interval: data.s[4],
-                ease: data.s[5],
-                streak: data.s[6]
+                attempts: Math.max(0, MoveTree._num(s[0], 0)),
+                correct: Math.max(0, MoveTree._num(s[1], 0)),
+                lastReviewed: s[2] != null ? MoveTree._num(s[2], null) : null,
+                nextReview: s[3] != null ? MoveTree._num(s[3], null) : null,
+                interval: Math.max(0, MoveTree._num(s[4], 0)),
+                ease: MoveTree._num(s[5], 2.5),
+                streak: Math.max(0, MoveTree._num(s[6], 0))
             };
+            // Guard against impossible ratios from corrupt data.
+            if (node.stats.correct > node.stats.attempts) {
+                node.stats.correct = node.stats.attempts;
+            }
+            if (node.stats.ease < 1.3) node.stats.ease = 1.3;
         }
-        if (data.c) {
+        if (data.c && typeof data.c === 'object') {
             for (const [moveSan, childData] of Object.entries(data.c)) {
+                if (!moveSan) continue;
                 const child = node.addChild(moveSan);
                 child.move = moveSan;
                 this._deserializeNode(child, childData);

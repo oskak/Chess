@@ -182,6 +182,9 @@ class App {
 
         if (isPromotion) {
             promotion = this._askPromotion();
+            // User cancelled the promotion dialog — abort the move entirely
+            // rather than silently promoting to Queen.
+            if (promotion === null) return 'snapback';
         }
 
         if (this.view === 'explorer') {
@@ -248,10 +251,11 @@ class App {
     }
 
     _askPromotion() {
-        // Simple prompt for now
+        // Returns a promotion piece letter, or null if the user cancelled.
         const choice = prompt('Promote to: Q (Queen), R (Rook), B (Bishop), N (Knight)', 'Q');
+        if (choice === null) return null; // cancelled — caller should abort the move
         const map = { 'Q': 'q', 'R': 'r', 'B': 'b', 'N': 'n', 'q': 'q', 'r': 'r', 'b': 'b', 'n': 'n' };
-        return map[choice] || 'q';
+        return map[choice.trim()] || 'q'; // unrecognized input falls back to Queen
     }
 
     // ===================== EXPLORER MODE =====================
@@ -520,7 +524,7 @@ class App {
     }
 
     _updateEngineEval() {
-        if (!this.engineEnabled || !this.engine || this.view !== 'explorer') return;
+        if (!this.engineEnabled || !this.engine || !this.engine.ready || this.view !== 'explorer') return;
 
         clearTimeout(this._engineDebounce);
         this._engineDebounce = setTimeout(async () => {
@@ -905,7 +909,7 @@ class App {
     }
 
     _updateSandboxEngineEval() {
-        if (!this.sandboxEngineEnabled || !this.engine || this.view !== 'sandbox') return;
+        if (!this.sandboxEngineEnabled || !this.engine || !this.engine.ready || this.view !== 'sandbox') return;
 
         clearTimeout(this._sandboxEngineDebounce);
         this._sandboxEngineDebounce = setTimeout(async () => {
@@ -1436,7 +1440,10 @@ class App {
         if (sessionInfo.state === 'finished') {
             const feedbackEl = document.getElementById('trainer-feedback');
             if (feedbackEl) {
-                feedbackEl.innerHTML = '<div class="feedback feedback-info">No lines to review! All caught up.</div>';
+                const totalLines = this.currentTree.countLines();
+                feedbackEl.innerHTML = totalLines === 0
+                    ? '<div class="feedback feedback-info">This repertoire has no moves yet. Add some in the Explorer (or import a PGN) first.</div>'
+                    : '<div class="feedback feedback-info">No lines due right now — you\'re all caught up! Try the "all" mode to drill anyway.</div>';
             }
             return;
         }
@@ -1607,12 +1614,24 @@ class App {
             const nodeCount = tree.countNodes();
             const lineCount = tree.countLines();
             const transCount = tree.countTranspositions();
+            const skipped = tree._skippedMoves || 0;
+
+            // Nothing usable parsed — don't save an empty repertoire silently.
+            if (nodeCount === 0) {
+                statusEl.textContent = skipped > 0
+                    ? `No valid moves found (${skipped} unreadable). Check the PGN format.`
+                    : 'No moves found in the PGN.';
+                progressEl.style.display = 'none';
+                return;
+            }
 
             statusEl.textContent = `Saving: ${nodeCount} positions, ${lineCount} lines...`;
 
             await this.db.saveRepertoire(tree);
 
-            statusEl.textContent = `Imported successfully!`;
+            statusEl.textContent = skipped > 0
+                ? `Imported with warnings — ${skipped} move(s) could not be read and were skipped.`
+                : `Imported successfully!`;
             progressEl.querySelector('.progress-bar').style.width = '100%';
 
             if (statsDiv) {
@@ -1622,6 +1641,7 @@ class App {
                     <span class="stat-item"><strong>${lineCount}</strong> lines</span>
                     <span class="stat-item"><strong>${transCount}</strong> transpositions</span>
                     <span class="stat-item">Notation: <strong>${langName}</strong></span>
+                    ${skipped > 0 ? `<span class="stat-item" style="color:var(--warning)"><strong>${skipped}</strong> skipped</span>` : ''}
                 `;
             }
 
@@ -1629,7 +1649,12 @@ class App {
             textInput.value = '';
             nameInput.value = '';
 
-            await this._loadSidebar();
+            // Sidebar refresh failing must not look like an import failure.
+            try {
+                await this._loadSidebar();
+            } catch (e) {
+                console.error('Sidebar refresh after import failed:', e);
+            }
 
             setTimeout(() => {
                 this._showView('welcome');
@@ -1639,7 +1664,9 @@ class App {
             }, 2000);
 
         } catch (e) {
-            statusEl.textContent = 'Error: ' + e.message;
+            // Reset the import UI so the user isn't stuck with a frozen progress bar.
+            statusEl.textContent = 'Import failed: ' + e.message;
+            if (progressEl) progressEl.style.display = 'none';
             console.error('Import error:', e);
         }
     }
