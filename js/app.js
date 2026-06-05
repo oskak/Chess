@@ -285,7 +285,7 @@ class App {
                 // Move not in repertoire - offer to add it
                 if (confirm(`Add ${move.san} to repertoire?`)) {
                     const newNode = this.currentNode.addChild(move.san);
-                    newNode.fen = this.chess.fen().split(' ').slice(0, 4).join(' ');
+                    newNode.fen = MoveTree.positionFen(this.chess);
                     this.currentNode = newNode;
                     this.currentTree._dirty = true;
                     this.currentTree.rebuildPositionIndex();
@@ -1015,7 +1015,7 @@ class App {
             const done = tempChess.move(san);
             if (!done) break;
             const child = node.addChild(san);
-            child.fen = tempChess.fen().split(' ').slice(0, 4).join(' ');
+            child.fen = MoveTree.positionFen(tempChess);
             node = child;
         }
         tree.rebuildPositionIndex();
@@ -1887,6 +1887,9 @@ class App {
         return div.innerHTML;
     }
 }
+
+// Expose for debugging from the console and for tests
+window.App = App;
 
 // Initialize app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {

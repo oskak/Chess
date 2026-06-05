@@ -133,6 +133,9 @@ class MoveTree {
 
     addLine(moves, comments = {}, nags = {}) {
         let node = this.root;
+        // Replay moves to compute position FENs so transposition detection works.
+        // Chess is a global (vendor/chess.min.js); guard in case it's unavailable.
+        let chess = (typeof Chess !== 'undefined') ? new Chess() : null;
         for (let i = 0; i < moves.length; i++) {
             const moveSan = moves[i];
             node = node.addChild(moveSan);
@@ -141,6 +144,16 @@ class MoveTree {
             }
             if (nags[i]) {
                 node.nags = nags[i];
+            }
+            // Compute and store the normalized position FEN for this node.
+            if (chess) {
+                const made = chess.move(moveSan, { sloppy: true });
+                if (made) {
+                    node.fen = MoveTree.positionFen(chess);
+                } else {
+                    // Illegal/unknown SAN — stop computing FENs for the rest of the line.
+                    chess = null;
+                }
             }
         }
         this._dirty = true;
@@ -154,6 +167,30 @@ class MoveTree {
             if (!node) return null;
         }
         return node;
+    }
+
+    /**
+     * Compute the canonical position FEN used as the transposition key.
+     * Uses placement + side-to-move + castling + en-passant, BUT strips the
+     * en-passant square unless a capture is actually available. chess.js emits
+     * an e.p. square after every double pawn push even when no pawn can capture,
+     * which would otherwise make identical positions reached by different move
+     * orders look different and defeat transposition detection.
+     *
+     * @param {Chess} chess - a chess.js instance at the position
+     * @returns {string} 4-field position FEN (normalized)
+     */
+    static positionFen(chess) {
+        const parts = chess.fen().split(' ');
+        let ep = parts[3];
+        if (ep !== '-') {
+            let capturable = false;
+            try {
+                capturable = chess.moves({ verbose: true }).some(m => m.flags.includes('e'));
+            } catch (e) { capturable = false; }
+            if (!capturable) ep = '-';
+        }
+        return `${parts[0]} ${parts[1]} ${parts[2]} ${ep}`;
     }
 
     /**

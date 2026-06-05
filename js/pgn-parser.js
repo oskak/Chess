@@ -446,10 +446,9 @@ class PGNParser {
                         currentNode = currentNode.addChild(san);
                         lastMoveNode = currentNode;
 
-                        // Store FEN for transposition detection
-                        // Use position part only (no move counters)
-                        const fen = chess.fen();
-                        const positionFen = fen.split(' ').slice(0, 4).join(' ');
+                        // Store normalized FEN for transposition detection
+                        // (strips non-capturable en-passant square — see MoveTree.positionFen)
+                        const positionFen = MoveTree.positionFen(chess);
                         currentNode.fen = positionFen;
 
                         // Register with tree's transposition index
