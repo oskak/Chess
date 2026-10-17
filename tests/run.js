@@ -607,7 +607,59 @@ section('12. DB — save/load & backup round-trip (fake-indexeddb)');
     }
 
     // ============================================================
-    section('18. Engine — perspective, sequencing, game over, MultiPV (fake worker)');
+    section('18. Transposition keys — string normalization & old data');
+    // ============================================================
+    {
+        const N = MoveTree.normalizeFenKey;
+        check('non-capturable e.p. square stripped',
+            N('rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1') === 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -');
+        check('capturable e.p. square kept',
+            N('rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3').endsWith(' d6'));
+        check('4-field input accepted', N('8/8/8/8/8/8/8/8 w - -') === '8/8/8/8/8/8/8/8 w - -');
+
+        // Must agree with a legal-move based check on real opening positions.
+        let disagreements = 0, checked = 0;
+        const games = [
+            ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6', 'Ba4', 'Nf6', 'O-O', 'Be7'],
+            ['d4', 'd5', 'c4', 'e6', 'Nc3', 'Nf6', 'Bg5', 'Be7', 'e3', 'O-O'],
+            ['e4', 'd5', 'e5', 'f5', 'exf6', 'Nxf6', 'd4', 'c5', 'd5', 'e5', 'dxe6'],
+            ['e4', 'c5', 'Nf3', 'd6', 'd4', 'cxd4', 'Nxd4', 'Nf6', 'Nc3', 'a6', 'f4', 'e5'],
+            ['c4', 'e5', 'Nc3', 'Nf6', 'g3', 'd5', 'cxd5', 'Nxd5', 'Bg2', 'Nb6', 'b4', 'a5', 'b5']
+        ];
+        for (const g of games) {
+            const c = new Chess();
+            for (const san of g) {
+                if (!c.move(san)) break;
+                const parts = c.fen().split(' ');
+                const legalEp = parts[3] !== '-' && c.moves({ verbose: true }).some(m => m.flags.includes('e'));
+                const expectedKey = `${parts[0]} ${parts[1]} ${parts[2]} ${legalEp ? parts[3] : '-'}`;
+                checked++;
+                if (N(c.fen()) !== expectedKey) disagreements++;
+            }
+        }
+        check(`string normalization matches legal moves (${checked} positions)`, disagreements === 0, disagreements + ' disagreements');
+
+        // Old data: a node stored with the raw e.p. field must match a new node.
+        const t = new MoveTree('Old', 'white');
+        t.addLine(['d4', 'd5', 'e4', 'e6']); // new-format keys
+        const data = JSON.parse(JSON.stringify(t.serialize()));
+        // Simulate an old-format branch reaching the same position via 1.e4 e6 2.d4 d5
+        data.tree.c.e4 = { m: 'e4', f: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3',
+            c: { e6: { m: 'e6', f: 'rnbqkbnr/pppp1ppp/4p3/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -',
+                c: { d4: { m: 'd4', f: 'rnbqkbnr/pppp1ppp/4p3/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3',
+                    c: { d5: { m: 'd5', f: 'rnbqkbnr/ppp2ppp/4p3/3p4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq d6' } } } } } } };
+        const t2 = MoveTree.deserialize(data);
+        check('old-format FEN normalized on load', t2.getNodeAt(['e4']).fen.endsWith(' -'), t2.getNodeAt(['e4']).fen);
+        check('transposition detected between old and new data',
+            t2.getNodeAt(['e4', 'e6', 'd4', 'd5']).isTransposition && t2.getNodeAt(['d4', 'd5', 'e4', 'e6']).isTransposition);
+
+        // Deleting one branch clears the flag on the other
+        t2.deleteSubtree(t2.getNodeAt(['e4']));
+        check('transposition flag cleared after deleting the other path', !t2.getNodeAt(['d4', 'd5', 'e4', 'e6']).isTransposition);
+    }
+
+    // ============================================================
+    section('19. Engine — perspective, sequencing, game over, MultiPV (fake worker)');
     // ============================================================
     {
         // A scripted stand-in for the Stockfish worker.

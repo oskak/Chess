@@ -191,16 +191,49 @@ class MoveTree {
      * @returns {string} 4-field position FEN (normalized)
      */
     static positionFen(chess) {
-        const parts = chess.fen().split(' ');
+        return MoveTree.normalizeFenKey(chess.fen());
+    }
+
+    /**
+     * Normalize any FEN (4 or 6 fields) to the transposition key used in the
+     * tree, working on the string alone (fast: no move generation, and it can
+     * be applied to FENs stored by older versions on load).
+     *
+     * The en-passant square is kept only if a pawn of the side to move stands
+     * next to the pawn that just advanced two squares. (Pins are ignored —
+     * irrelevant for opening transpositions, and the rule is applied the same
+     * way everywhere, so keys stay consistent.)
+     */
+    static normalizeFenKey(fen) {
+        if (typeof fen !== 'string') return fen;
+        const parts = fen.trim().split(/\s+/);
+        if (parts.length < 4) return fen;
+        const [placement, turn, castling] = parts;
         let ep = parts[3];
         if (ep !== '-') {
             let capturable = false;
-            try {
-                capturable = chess.moves({ verbose: true }).some(m => m.flags.includes('e'));
-            } catch (e) { capturable = false; }
+            if (/^[a-h][36]$/.test(ep)) {
+                const rows = placement.split('/'); // rows[0] is rank 8
+                const pieceAt = (file, rank) => {
+                    const row = rows[8 - rank] || '';
+                    let f = 0;
+                    for (const ch of row) {
+                        if (ch >= '1' && ch <= '8') f += Number(ch);
+                        else {
+                            if (f === file) return ch;
+                            f++;
+                        }
+                    }
+                    return null;
+                };
+                const file = ep.charCodeAt(0) - 97;
+                const pawnRank = ep[1] === '3' ? 4 : 5; // rank of the pawn that just moved
+                const capturer = turn === 'w' ? 'P' : 'p';
+                capturable = [file - 1, file + 1].some(f => f >= 0 && f <= 7 && pieceAt(f, pawnRank) === capturer);
+            }
             if (!capturable) ep = '-';
         }
-        return `${parts[0]} ${parts[1]} ${parts[2]} ${ep}`;
+        return `${placement} ${turn} ${castling} ${ep}`;
     }
 
     /**
@@ -210,6 +243,7 @@ class MoveTree {
     rebuildPositionIndex() {
         this.positionIndex.clear();
         this._traverse(this.root, (node) => {
+            node.isTransposition = false; // recomputed below (e.g. after a branch was deleted)
             if (node.fen) {
                 if (!this.positionIndex.has(node.fen)) {
                     this.positionIndex.set(node.fen, []);
@@ -594,7 +628,9 @@ class MoveTree {
         // the insertion index here instead would lose a "Set as Mainline"
         // choice on reload whenever the mainline wasn't the first child.
         node.priority = data.p !== undefined ? MoveTree._num(data.p, 0) : 0;
-        if (typeof data.f === 'string') node.fen = data.f;
+        // Older versions stored the raw en-passant field: normalize on load so
+        // their positions match new ones for transposition detection.
+        if (typeof data.f === 'string') node.fen = MoveTree.normalizeFenKey(data.f);
         if (data.t) node.isTransposition = true;
         if (data.e === 0) node.enabled = false;
         if (data.cl) node.collapsed = true;

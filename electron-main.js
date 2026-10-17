@@ -1,24 +1,45 @@
-const { app, BrowserWindow, Menu, dialog, shell } = require('electron');
+const { app, BrowserWindow, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
 let mainWindow;
 
+/** Run a snippet in the page. `userGesture` lets it open file pickers. */
+function runInPage(code, userGesture = false) {
+    if (!mainWindow) return;
+    mainWindow.webContents.executeJavaScript(code, userGesture).catch(err => console.error(err));
+}
+
 function createWindow() {
+    const iconPath = path.join(__dirname, 'icon.png');
     mainWindow = new BrowserWindow({
-        width: 1200,
-        height: 850,
-        minWidth: 800,
+        width: 1280,
+        height: 880,
+        minWidth: 820,
         minHeight: 600,
         title: 'Chess Opening Repertoire Trainer',
-        icon: path.join(__dirname, 'icon.png'),
+        backgroundColor: '#0f1923', // no white flash before the page paints
+        show: false,
+        ...(fs.existsSync(iconPath) ? { icon: iconPath } : {}),
         webPreferences: {
             nodeIntegration: false,
-            contextIsolation: true
+            contextIsolation: true,
+            sandbox: true
         }
     });
 
+    mainWindow.once('ready-to-show', () => mainWindow.show());
     mainWindow.loadFile('index.html');
+
+    // The app is a single page: open external links in the browser and
+    // never navigate the window away from it.
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (/^https?:/.test(url)) shell.openExternal(url);
+        return { action: 'deny' };
+    });
+    mainWindow.webContents.on('will-navigate', (event, url) => {
+        if (url !== mainWindow.webContents.getURL()) event.preventDefault();
+    });
 
     mainWindow.on('closed', () => {
         mainWindow = null;
@@ -33,43 +54,24 @@ function buildMenu() {
                 {
                     label: 'Import PGN...',
                     accelerator: 'CmdOrCtrl+I',
-                    click: () => {
-                        mainWindow.webContents.executeJavaScript(
-                            "document.getElementById('btn-import').click();"
-                        );
-                    }
+                    click: () => runInPage("document.getElementById('btn-import').click();")
                 },
+                {
+                    label: 'New Repertoire...',
+                    accelerator: 'CmdOrCtrl+N',
+                    click: () => runInPage("document.getElementById('btn-new-repertoire').click();")
+                },
+                { type: 'separator' },
                 {
                     label: 'Backup All Data...',
                     accelerator: 'CmdOrCtrl+B',
-                    click: () => {
-                        mainWindow.webContents.executeJavaScript(
-                            "document.getElementById('btn-backup').click();"
-                        );
-                    }
+                    click: () => runInPage("document.getElementById('btn-backup').click();")
                 },
                 {
                     label: 'Restore from Backup...',
                     accelerator: 'CmdOrCtrl+Shift+B',
-                    click: async () => {
-                        const result = await dialog.showOpenDialog(mainWindow, {
-                            title: 'Restore from Backup',
-                            filters: [{ name: 'JSON Backup', extensions: ['json'] }],
-                            properties: ['openFile']
-                        });
-                        if (!result.canceled && result.filePaths.length > 0) {
-                            const filePath = result.filePaths[0];
-                            mainWindow.webContents.executeJavaScript(`
-                                (async () => {
-                                    const resp = await fetch('file://${filePath.replace(/\\/g, '/')}');
-                                    const text = await resp.text();
-                                    const blob = new Blob([text], {type: 'application/json'});
-                                    const file = new File([blob], '${path.basename(filePath)}', {type: 'application/json'});
-                                    window.app._restoreFromFile(file);
-                                })();
-                            `);
-                        }
-                    }
+                    // Opens the app's own file picker (needs a user gesture).
+                    click: () => runInPage("document.getElementById('restore-file').click();", true)
                 },
                 { type: 'separator' },
                 {
@@ -85,26 +87,23 @@ function buildMenu() {
                 {
                     label: 'Home',
                     accelerator: 'CmdOrCtrl+H',
-                    click: () => {
-                        mainWindow.webContents.executeJavaScript(
-                            "document.getElementById('btn-home').click();"
-                        );
-                    }
+                    click: () => runInPage("document.getElementById('btn-home').click();")
+                },
+                {
+                    label: 'Sandbox Board',
+                    accelerator: 'CmdOrCtrl+Shift+S',
+                    click: () => runInPage("document.getElementById('btn-sandbox').click();")
                 },
                 { type: 'separator' },
                 {
                     label: 'Toggle Full Screen',
                     accelerator: 'F11',
-                    click: () => {
-                        mainWindow.setFullScreen(!mainWindow.isFullScreen());
-                    }
+                    click: () => mainWindow && mainWindow.setFullScreen(!mainWindow.isFullScreen())
                 },
                 {
                     label: 'Toggle Developer Tools',
                     accelerator: 'F12',
-                    click: () => {
-                        mainWindow.webContents.toggleDevTools();
-                    }
+                    click: () => mainWindow && mainWindow.webContents.toggleDevTools()
                 },
                 { type: 'separator' },
                 { role: 'zoomIn' },
@@ -117,30 +116,14 @@ function buildMenu() {
             submenu: [
                 {
                     label: 'Keyboard Shortcuts',
-                    click: () => {
-                        dialog.showMessageBox(mainWindow, {
-                            type: 'info',
-                            title: 'Keyboard Shortcuts',
-                            message: 'Keyboard Shortcuts',
-                            detail: [
-                                'F - Flip board',
-                                'H - Toggle hints (training)',
-                                'M - Toggle sounds',
-                                'Left Arrow - Undo move (explorer)',
-                                'Ctrl+I - Import PGN',
-                                'Ctrl+B - Backup data',
-                                'Ctrl+Shift+B - Restore backup',
-                                'F11 - Full screen'
-                            ].join('\n')
-                        });
-                    }
+                    accelerator: 'F1',
+                    click: () => runInPage('window.app && window.app._showShortcuts();')
                 }
             ]
         }
     ];
 
-    const menu = Menu.buildFromTemplate(template);
-    Menu.setApplicationMenu(menu);
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 app.whenReady().then(() => {

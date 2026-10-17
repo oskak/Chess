@@ -19,13 +19,22 @@ const doc = dom.window.document;
 const htmlIds = new Set();
 doc.querySelectorAll('[id]').forEach(el => htmlIds.add(el.id));
 
-// 2. Collect every getElementById('X') referenced in app.js
-const getByIdRe = /getElementById\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
+// 2. Collect every id referenced in app.js: getElementById('X') plus the
+//    small helpers that take an element id as their first argument:
+//    on('X', event, fn), set('X', disabled), show('X', visible)
+const idPatterns = [
+    /getElementById\(\s*['"`]([^'"`]+)['"`]\s*\)/g,
+    /\bon\(\s*['"]([A-Za-z0-9_-]+)['"]\s*,/g,
+    /\bset\(\s*['"]([A-Za-z0-9_-]+)['"]\s*,/g,
+    /\bshow\(\s*['"]([A-Za-z0-9_-]+)['"]\s*,/g,
+];
 const referencedIds = new Map(); // id -> count
 let m;
-while ((m = getByIdRe.exec(appJs)) !== null) {
-    if (m[1].includes('${')) continue; // skip dynamic template-literal ids (e.g. view-${viewName})
-    referencedIds.set(m[1], (referencedIds.get(m[1]) || 0) + 1);
+for (const re of idPatterns) {
+    while ((m = re.exec(appJs)) !== null) {
+        if (m[1].includes('${')) continue; // skip dynamic template-literal ids (e.g. view-${viewName})
+        referencedIds.set(m[1], (referencedIds.get(m[1]) || 0) + 1);
+    }
 }
 
 // 3. Ids that are referenced in JS but created dynamically (not in static HTML).
@@ -33,11 +42,8 @@ while ((m = getByIdRe.exec(appJs)) !== null) {
 //    doesn't false-positive.
 const dynamicIds = new Set([
     'context-menu',      // created in _showContextMenu
-    'toast-message',     // created in _toast
-    // Injected via innerHTML in trainer feedback, then bound in the same scope:
-    'btn-next-line',
-    'btn-retry',
-    'btn-show-move',
+    'toast-host',        // created by Dialogs.toast
+    // Rendered into #trainer-feedback by _showTrainerComplete:
     'btn-train-again',
     'btn-back-home',
 ]);

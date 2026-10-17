@@ -9,6 +9,15 @@ class SoundEngine {
         this.ctx = null;
         this.enabled = true;
         this.volume = 0.5;
+
+        // Audio must never break gameplay (no AudioContext, autoplay policy,
+        // device errors...): make every play* method fail silently.
+        for (const name of ['playMove', 'playCapture', 'playCheck', 'playCorrect', 'playError', 'playSuccess', 'playTransposition']) {
+            const fn = this[name].bind(this);
+            this[name] = (...args) => {
+                try { fn(...args); } catch (e) { /* audio unavailable */ }
+            };
+        }
     }
 
     _ensureContext() {
@@ -217,6 +226,26 @@ class SoundEngine {
         osc2.start(now);
         osc.stop(now + 0.5);
         osc2.stop(now + 0.5);
+    }
+
+    /**
+     * Play a check sound: a move thud followed by a short, brighter ping.
+     */
+    playCheck() {
+        if (!this.enabled) return;
+        this.playMove();
+        const ctx = this._ensureContext();
+        const now = ctx.currentTime + 0.02;
+        const osc = ctx.createOscillator();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(660, now);
+        osc.frequency.exponentialRampToValueAtTime(990, now + 0.09);
+        const gain = this._createGain(0.12);
+        gain.gain.setValueAtTime(0.12 * this.volume, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+        osc.connect(gain);
+        osc.start(now);
+        osc.stop(now + 0.2);
     }
 
     toggle() {

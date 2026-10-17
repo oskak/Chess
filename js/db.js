@@ -102,18 +102,64 @@ class RepertoireDB {
             const request = store.getAll();
 
             request.onsuccess = (event) => {
+                const now = Date.now();
                 const items = event.target.result.map(data => ({
                     id: data.id,
                     name: data.name,
                     color: data.color,
                     createdAt: data.createdAt,
-                    updatedAt: data.updatedAt
+                    updatedAt: data.updatedAt,
+                    summary: RepertoireDB.summarize(data.tree, now, data.color)
                 }));
                 items.sort((a, b) => b.updatedAt - a.updatedAt);
                 resolve(items);
             };
             request.onerror = (event) => reject(new Error('List failed: ' + event.target.error));
         });
+    }
+
+    /**
+     * Training summary computed straight from the serialized tree (no
+     * MoveTree construction), cheap enough to run for every repertoire when
+     * the sidebar refreshes. Mirrors MoveTree.getStatsOverview().
+     * @returns {{lines, due, newLines, learned, nextDue, accuracy}}
+     */
+    static summarize(treeData, now = Date.now(), color = 'white') {
+        const out = { lines: 0, due: 0, newLines: 0, learned: 0, nextDue: null, accuracy: null };
+        if (!treeData || typeof treeData !== 'object') return out;
+        // Lines in which the player never moves are not trained (see Trainer).
+        const minDepth = color === 'black' ? 2 : 1;
+        let moveAttempts = 0, moveCorrect = 0;
+        const stack = [[treeData, true, true, 0]];
+        while (stack.length) {
+            const [node, active, isRoot, depth] = stack.pop();
+            if (!node || typeof node !== 'object') continue;
+            const nodeActive = active && (isRoot || node.e !== 0);
+            if (Array.isArray(node.ms)) {
+                moveAttempts += Number(node.ms[0]) || 0;
+                moveCorrect += Number(node.ms[1]) || 0;
+            }
+            const children = node.c && typeof node.c === 'object' ? Object.values(node.c) : [];
+            if (children.length === 0) {
+                if (!isRoot && nodeActive && depth >= minDepth) {
+                    out.lines++;
+                    const s = Array.isArray(node.s) ? node.s : null;
+                    const lastReviewed = s ? s[2] : null;
+                    const nextReview = s ? s[3] : null;
+                    if (!lastReviewed) {
+                        out.newLines++;
+                    } else {
+                        out.learned++;
+                        if (nextReview && nextReview <= now) out.due++;
+                        else if (nextReview && (out.nextDue === null || nextReview < out.nextDue)) out.nextDue = nextReview;
+                    }
+                }
+                continue;
+            }
+            for (const child of children) stack.push([child, nodeActive, false, depth + 1]);
+        }
+        out.accuracy = moveAttempts > 0 ? Math.round(moveCorrect / moveAttempts * 100) : null;
+        return out;
     }
 
     async deleteRepertoire(id) {
