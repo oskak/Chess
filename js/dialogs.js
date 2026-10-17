@@ -284,6 +284,10 @@ class Dialogs {
             host.setAttribute('aria-live', 'polite');
             document.body.appendChild(host);
         }
+        // Keep at most three visible: drop the oldest
+        const visible = [...host.querySelectorAll('.toast:not(.leaving)')];
+        while (visible.length >= 3) visible.shift().remove();
+
         const el = document.createElement('div');
         el.className = `toast toast-${type}`;
         el.textContent = message;

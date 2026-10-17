@@ -309,7 +309,52 @@ function startServer() {
         check('board oriented for Black', await page.evaluate(() => app.boardOrientation === 'black'));
 
         // ------------------------------------------------------------------
-        section('8. Mobile layout (390 px)');
+        section('8. Import, backup, delete, restore (your data)');
+        await page.click('#btn-import');
+        await page.fill('#import-name', 'Imported via e2e');
+        await page.selectOption('#import-color', 'black');
+        await page.fill('#pgn-text', '1. e4 c5 {Sicilian} 2. Nf3 d6 (2... Nc6 3. d4) 3. d4 cxd4 4. Nxd4 Nf6 *');
+        await page.click('#btn-do-import');
+        await page.waitForFunction(() => app.view === 'explorer' && app.currentTree && app.currentTree.name === 'Imported via e2e', null, { timeout: 10000 });
+        check('pasted PGN imported and opened in the explorer', true);
+        check('imported variations and comment', await page.evaluate(() =>
+            app.currentTree.countLines() === 2 && app.currentTree.getNodeAt(['e4', 'c5']).comment === 'Sicilian'));
+        const repsBefore = await page.locator('.sidebar-item').count();
+
+        const [download] = await Promise.all([
+            page.waitForEvent('download', { timeout: 10000 }),
+            page.click('#btn-backup')
+        ]);
+        const backupPath = path.join(require('os').tmpdir(), 'crt-e2e-backup.json');
+        await download.saveAs(backupPath);
+        const backup = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+        check('backup downloaded with every repertoire', backup.repertoires.length === repsBefore, `${backup.repertoires.length} vs ${repsBefore}`);
+
+        await page.hover('.sidebar-item:has-text("Imported via e2e")');
+        await page.click('.sidebar-item:has-text("Imported via e2e") .btn-delete-sb');
+        await page.waitForSelector('.modal');
+        await page.click('.modal .btn-danger-solid');
+        await page.waitForTimeout(400);
+        check('repertoire deleted after confirmation', await page.locator('.sidebar-item').count() === repsBefore - 1);
+
+        await page.setInputFiles('#restore-file', backupPath);
+        await page.waitForSelector('.modal');
+        await page.click('.modal button:has-text("Merge")');
+        await page.waitForFunction((n) => document.querySelectorAll('.sidebar-item').length === n, repsBefore, { timeout: 10000 })
+            .catch(() => {});
+        check('restore (merge) brings it back', await page.locator('.sidebar-item').count() === repsBefore);
+        const restored = await page.evaluate(async () => {
+            const list = await app.db.listRepertoires();
+            const r = list.find(x => x.name === 'Imported via e2e');
+            const t = r && await app.db.loadRepertoire(r.id);
+            return t && t.getNodeAt(['e4', 'c5']).comment;
+        });
+        check('restored repertoire keeps its content', restored === 'Sicilian', String(restored));
+
+        // ------------------------------------------------------------------
+        section('9. Mobile layout (390 px)');
+        await page.click('.sidebar-item:has-text("E2E Black")');
+        await page.waitForTimeout(300);
         await page.setViewportSize({ width: 390, height: 844 });
         await page.waitForTimeout(500);
         const layout = await page.evaluate(() => ({
@@ -327,7 +372,7 @@ function startServer() {
     }
 
     // ------------------------------------------------------------------
-    section('9. Installable & offline (service worker)');
+    section('10. Installable & offline (service worker)');
     try {
         const ctx2 = await browser.newContext();
         const p2 = await ctx2.newPage();
