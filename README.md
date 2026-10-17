@@ -1,9 +1,11 @@
 # Chess Opening Repertoire Trainer
 
-Build and drill your chess opening repertoire with spaced repetition, a full
-move tree, transposition detection, ECO opening names, a free-play sandbox, and
-an integrated **Stockfish 18** engine. Runs entirely offline — your data lives in
-your browser (IndexedDB), nothing is sent anywhere.
+Build your opening repertoire and make it stick. Import or build lines move by
+move, learn them with arrows on the board, and review them with spaced
+repetition just before you would forget them. Includes a full move-tree
+explorer with notes, transposition detection, ECO opening names, a free
+sandbox board and **Stockfish 18** analysis. Runs entirely offline — your data
+lives in your browser (IndexedDB) and is never sent anywhere.
 
 ![CI](https://github.com/oskak/chess/actions/workflows/ci.yml/badge.svg)
 
@@ -13,111 +15,133 @@ your browser (IndexedDB), nothing is sent anywhere.
 
 ```bash
 npm install      # first time only
-npm run web      # serve at http://localhost:8080
+npm run web      # then open http://localhost:8080
 ```
 
-Then open **http://localhost:8080** in your browser.
+Or run it as a desktop app (Electron):
 
-> **Desktop app (optional):** `npm start` launches it in an Electron window
-> instead of the browser. Both load the exact same app.
+```bash
+npm start
+```
 
-To get the latest version after changes are pushed:
+Both load the exact same app. To update after new changes are pushed:
 
 ```bash
 git pull origin main
 npm install
-npm run web
+npm run web      # or: npm start
 ```
+
+> First time? Click **Try the sample repertoires** on the start screen — you get
+> an Italian Game (White) and a Caro-Kann (Black) repertoire to train right away.
 
 ---
 
+## How training works
+
+1. **Learn** — a line you have never seen is played out with a green arrow on
+   each of your moves (and its note, if it has one). You replay it.
+2. **Review** — about 4 hours later the line is due. Now you play it from
+   memory. The opponent's replies are played for you.
+3. **Spaced repetition (SM-2)** — a line played without a miss comes back after
+   1 day, then 3 days, then at growing intervals. Any miss (wrong move, hint or
+   "show move") resets it, and it is repeated once more at the end of the session.
+4. Every one of your moves is also tracked individually, so the tree view and
+   the explorer show which moves you actually know (green) and which you keep
+   missing (red).
+
+Playing *another* move from your repertoire at a branch point is not a
+mistake — you are told the line trains a different move and can try again.
+
 ## Features
 
-- **Spaced-repetition training (SM-2)** — drills your weakest lines first,
-  schedules reviews, tracks accuracy and streaks per move.
-- **Move tree explorer** — browse your whole repertoire, collapse/expand
-  branches, see accuracy colour-coding, enable/disable lines, right-click to
-  set mainline or delete.
-- **Transposition detection** — positions reachable by multiple move orders are
-  detected and linked (en-passant-aware, so it doesn't miss real transpositions).
-- **ECO opening names** — shows e.g. *B90: Sicilian, Najdorf* as you navigate.
-- **Stockfish 18 engine** — eval bar, best line, and score in the explorer and
-  sandbox (toggle with the gear button or the `E` key).
-- **Sandbox** — a free board separate from your repertoires: play any moves,
-  load a FEN, copy FEN/PGN, or save a line as a new repertoire.
-- **PGN import** — paste or load `.pgn` files (multi-language piece notation
-  supported); variations, comments and NAGs are preserved.
-- **Backup & restore** — export all repertoires (incl. training stats) to a JSON
-  file and import it back. Persistent-storage is requested so the browser won't
-  evict your data.
+- **Trainer** — learn/review modes, hints (highlight the piece), show-move
+  arrows, per-line grading, per-move accuracy, session summary, due counts.
+- **Explorer** — browse the repertoire with arrows for your prepared moves,
+  ◀ ▶ navigation (mainline forward), **Edit mode** to build lines by playing
+  moves, **notes and move-quality marks** (!, ?, !!, ??, !?, ?!) for every move,
+  "Train from here", transposition links, right-click menu on the tree
+  (train from here, set mainline, enable/disable, delete).
+- **Stockfish 18** — runs in your browser (WASM): evaluation bar beside the
+  board, the top three lines (click one to play it), best-move arrow.
+- **Sandbox** — a free board: play any moves, load a FEN, copy FEN/PGN, save
+  the line into a new or existing repertoire.
+- **PGN import/export** — variations, comments and NAGs are kept; unreadable
+  moves are reported instead of silently dropped. Multi-language piece letters
+  (Czech, German, French, Spanish…) are detected automatically.
+- **Click or drag** — tap a piece then a square, or drag it. Pawn promotion
+  opens a piece picker.
+- **Backup & restore** — download everything (including training progress) as
+  a JSON file and restore it on any machine.
 
 ### Keyboard shortcuts
 
+Press **?** in the app for the full list.
+
 | Key | Action |
 |-----|--------|
-| `←` / `→` | Undo / redo (explorer & sandbox) |
+| `←` / `→` | Back / forward (Explorer), undo / redo (Sandbox) |
+| `Home` / `End` | Start position / end of mainline |
 | `F` | Flip board |
-| `E` | Toggle engine (explorer & sandbox) |
-| `H` | Toggle hints (training) |
-| `M` | Mute / unmute sounds |
+| `E` | Engine on / off |
+| `H` / `S` | Hint / show the move (Training) |
+| `N` or `Enter` | Next line (Training) |
+| `M` | Sounds on / off |
 
 ---
 
 ## Your data & backups
 
-Everything is stored locally in your browser via **IndexedDB** — it survives
-closing the browser and works fully offline. Two things to know:
+Everything is stored locally in your browser (or in the desktop app) via
+**IndexedDB**: it survives restarts and works offline, and progress is saved
+after every training line. Click **💾 Backup** (top right) now and then — the
+start screen reminds you when your last backup is older than a week. Use
+**Restore Backup** to load it back, e.g. on another computer.
 
-1. The app requests **persistent storage** so the browser won't clear it under
-   disk pressure.
-2. Still, click **💾 Backup** (top-right) every so often to download a JSON copy.
-   If you ever clear browser data or switch machines, use **Restore Backup** to
-   load it back. This is the only way data moves between devices.
+Note: the browser version (`npm run web`) and the desktop app (`npm start`)
+keep **separate** data. Use Backup/Restore to move data between them.
 
 ---
 
 ## Development & testing
 
-The app is plain HTML/CSS/JS with vendored libraries in `vendor/` (jQuery,
-chessboard.js, chess.js, Stockfish 18) — no build step.
-
-Run the automated test suite (no browser needed):
+Plain HTML/CSS/JS with vendored libraries in `vendor/` (jQuery, chessboard.js,
+chess.js, Stockfish 18) — no build step.
 
 ```bash
-npm test
+npm test               # logic, DOM wiring, boot, engine (no browser needed)
+npm run test:e2e       # end-to-end in real Chromium (Playwright)
+npm run test:electron  # the desktop app (Linux needs: xvfb-run -a npm run test:electron)
 ```
 
-It runs four suites — see [`tests/README.md`](tests/README.md):
-
-- **logic** — move tree, serialization, SM-2 training, PGN, ECO, engine parsing,
-  IndexedDB (74 checks)
-- **wiring** — every DOM id referenced in JS exists in the HTML
-- **boot** — the full app boots in jsdom and the board renders
-- **engine** — the real Stockfish 18 WASM returns an evaluation
-
-CI (GitHub Actions) runs the whole suite on Node 20 and 22 for every push.
+See [`tests/README.md`](tests/README.md) for what each suite covers. CI
+(GitHub Actions) runs all of them on every push.
 
 ### Project layout
 
 ```
-index.html            app shell
-css/app.css           styles
+index.html              app shell
+css/app.css             styles
 js/
-  app.js              main controller (views, board, events)
-  move-tree.js        repertoire data model (trie + transpositions)
-  trainer.js          SM-2 spaced-repetition engine
-  pgn-parser.js       PGN import/export
-  engine.js           Stockfish wrapper (Web Worker + UCI)
-  eco.js              ECO opening-name lookup
-  db.js               IndexedDB persistence + backup
-  pieces.js           inline SVG pieces (no image files needed)
-  sounds.js           move/capture/check sound effects
-vendor/               jQuery, chessboard.js, chess.js, Stockfish 18 WASM
-tests/                automated test suites
+  app.js                main controller (views, board, explorer, trainer UI, sandbox)
+  trainer.js            spaced-repetition engine (learn → review, SM-2 grading)
+  move-tree.js          repertoire data model (trie, per-move stats, transpositions)
+  engine.js             Stockfish wrapper (Web Worker + UCI, MultiPV, sequencing)
+  board-overlay.js      SVG arrows over the board
+  dialogs.js            modal dialogs, promotion picker, toasts
+  pgn-parser.js         PGN import/export
+  db.js                 IndexedDB persistence, backup, repertoire summaries
+  eco.js                ECO opening names
+  sample-repertoires.js sample repertoires for first run
+  pieces.js, sounds.js  inline SVG pieces, synthesized sounds
+scripts/serve.js        dependency-free local web server (npm run web)
+electron-main.js        desktop app entry (npm start)
+vendor/                 jQuery, chessboard.js, chess.js, Stockfish 18 WASM
+tests/                  automated tests
 ```
 
 ---
 
 ## License
 
-MIT
+MIT. Stockfish is GPLv3 (see `vendor/stockfish`).

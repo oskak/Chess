@@ -1,48 +1,19 @@
 # Tests
 
-Automated verification that the app's features actually work. No browser needed —
-everything runs in Node.
-
 ```bash
-npm install     # first time (installs jsdom, fake-indexeddb, stockfish)
-npm test        # run everything
+npm install            # first time (jsdom, fake-indexeddb, stockfish, playwright)
+npm test               # fast suites, no browser needed
+npm run test:e2e       # real Chromium
+npm run test:electron  # desktop app (Linux: xvfb-run -a npm run test:electron)
 ```
-
-Or run individually:
 
 | Command | What it proves |
 |---|---|
-| `npm run test:logic`  | Core logic: move tree, serialization, training (SM-2), PGN parse/export, ECO names, engine UCI parsing, IndexedDB save/load + backup round-trip. **74 checks.** |
-| `npm run test:wiring` | Every DOM id referenced in `js/app.js` actually exists in `index.html` (catches dead buttons / silently broken features). |
-| `npm run test:boot`   | The full app (with real jQuery + chessboard.js + chess.js) instantiates and `init()` runs without errors. The board renders. |
-| `npm run test:engine` | The vendored **Stockfish 18** WASM actually evaluates a position and returns a best move over UCI. |
+| `npm run test:logic`  | Core logic in Node: move tree & serialization, trainer (full lines: completion on either side, grading by misses, re-queue, alternatives, learn→review scheduling, per-move stats), PGN, ECO, transposition keys, engine wrapper with a scripted fake UCI worker (White-perspective scores, search sequencing, game over, MultiPV), IndexedDB + backup. **160 checks.** |
+| `npm run test:wiring` | Every DOM id used by `js/app.js` exists in `index.html`. |
+| `npm run test:boot`   | The full app boots in jsdom with the real vendor libraries and renders the board. |
+| `npm run test:engine` | The real Stockfish 18 WASM returns an evaluation over UCI. |
+| `npm run test:e2e`    | Drives the app in Chromium like a user (50 checks): sample repertoires, learning with arrows via click-to-move, a review with a miss (grading, re-queue, weak spots), explorer navigation/edit mode/notes/NAGs, Stockfish in a Web Worker (sign of the score, MultiPV, best-move arrow), promotion picker, checks in the sandbox, the new-repertoire dialog, and the mobile layout. Fails on any page error or native `alert/confirm/prompt`. Set `E2E_SHOTS=dir` to save screenshots, `HEADED=1` to watch. |
+| `npm run test:electron` | The desktop app from `file://`: the new-repertoire dialog (Electron has no `prompt()`), Stockfish loading from `file://`, click-to-move. |
 
-## What the suites cover
-
-### `tests/run.js` — functional logic (74 checks)
-Loads the real app modules in a Node VM and exercises them:
-- **MoveTree**: addLine/getNodeAt, branching, serialize↔deserialize round-trip
-  (comments, NAGs, all stats fields, `enabled`, `collapsed`), toggle/delete/setMainline,
-  transposition detection, accuracy helper.
-- **PGNParser**: parse mainline + variations, comments, NAGs, export.
-- **Trainer**: line-queue building, **disabled lines are skipped**, the
-  `startSession → nextLine → submitMove` flow, SM-2 interval/ease updates.
-- **ECO**: every stored FEN is legal, and replaying real openings
-  (Italian, Ruy Lopez, Sicilian, French, Caro-Kann, QGD, KID, English, Réti)
-  returns the right name.
-- **Engine helpers**: UCI `info` parsing, score formatting, eval-bar %, UCI→SAN.
-- **DB** (fake-indexeddb): save→load preserves stats; export→delete→import restores.
-
-### `tests/wiring.js` — DOM wiring audit
-Parses `index.html` for all `id="…"` and `js/app.js` for all
-`getElementById('…')` / `querySelector('#…')`, then verifies every reference
-resolves (dynamically-injected ids are whitelisted).
-
-### `tests/boot.js` — full boot in jsdom
-Loads exactly what `index.html` loads, constructs `App`, runs `init()`, and
-asserts no runtime errors and that chessboard.js populated the board element.
-
-### `tests/engine-smoke.js` — real Stockfish 18
-Runs the actual engine (`node_modules/stockfish`, byte-identical to
-`vendor/stockfish/`) and asserts it emits `uciok`, a `score`, and a legal
-`bestmove`.
+Helper files: `tests/harness.js` loads the browser modules into a Node VM.

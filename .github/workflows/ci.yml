@@ -8,12 +8,15 @@ on:
 
 jobs:
   test:
-    name: Test (Node ${{ matrix.node }})
+    name: Unit + integration (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         node: ["20", "22"]
+    env:
+      # Not needed for these tests — skip the ~100 MB Electron download
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
 
     steps:
       - name: Checkout
@@ -30,3 +33,42 @@ jobs:
 
       - name: Run test suite
         run: npm test
+
+  e2e:
+    name: End-to-end (Chromium + Electron)
+    runs-on: ubuntu-latest
+    env:
+      E2E_SHOTS: e2e-shots
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Install a virtual display for Electron
+        run: sudo apt-get install -y xvfb
+
+      - name: Browser end-to-end test
+        run: mkdir -p e2e-shots && npm run test:e2e
+
+      - name: Desktop (Electron) end-to-end test
+        run: xvfb-run -a npm run test:electron
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: e2e-shots
+          if-no-files-found: ignore
