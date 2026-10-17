@@ -13,6 +13,13 @@ lives in your browser (IndexedDB) and is never sent anywhere.
 
 ## Quick start
 
+**Easiest: use it online — nothing to install.** The `main` branch is
+published with GitHub Pages at **https://oskak.github.io/Chess/**. In Chrome or
+Edge, click the *Install* icon in the address bar to get it as an app with its
+own window and desktop icon. It also works **offline** after the first visit.
+
+**Or run it locally:**
+
 ```bash
 npm install      # first time only
 npm run web      # then open http://localhost:8080
@@ -98,8 +105,9 @@ after every training line. Click **💾 Backup** (top right) now and then — th
 start screen reminds you when your last backup is older than a week. Use
 **Restore Backup** to load it back, e.g. on another computer.
 
-Note: the browser version (`npm run web`) and the desktop app (`npm start`)
-keep **separate** data. Use Backup/Restore to move data between them.
+Note: data is stored per address, so the online version, `npm run web`
+(localhost:8080) and the desktop app (`npm start`) each keep **separate**
+data. Use Backup/Restore to move data between them.
 
 ---
 
@@ -135,6 +143,7 @@ js/
   sample-repertoires.js sample repertoires for first run
   pieces.js, sounds.js  inline SVG pieces, synthesized sounds
 scripts/serve.js        dependency-free local web server (npm run web)
+sw.js, manifest.webmanifest, icons/   installable app + offline support (network-first)
 electron-main.js        desktop app entry (npm start)
 vendor/                 jQuery, chessboard.js, chess.js, Stockfish 18 WASM
 tests/                  automated tests

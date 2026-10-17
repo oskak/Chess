@@ -99,6 +99,13 @@ class App {
 
         this._showView('welcome');
         await this._renderWelcome();
+        this._registerServiceWorker();
+    }
+
+    /** Installable + offline support when served over http(s) (not file:// / Electron). */
+    _registerServiceWorker() {
+        if (!('serviceWorker' in navigator) || !/^https?:$/.test(location.protocol)) return;
+        navigator.serviceWorker.register('sw.js').catch(e => console.warn('Service worker not registered:', e));
     }
 
     // ===================== PREFERENCES =====================

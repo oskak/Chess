@@ -326,6 +326,35 @@ function startServer() {
         await shot('crash');
     }
 
+    // ------------------------------------------------------------------
+    section('9. Installable & offline (service worker)');
+    try {
+        const ctx2 = await browser.newContext();
+        const p2 = await ctx2.newPage();
+        p2.on('pageerror', e => pageErrors.push('offline page: ' + e.message));
+        await p2.goto(url);
+        await p2.waitForFunction(() => window.app, null, { timeout: 15000 });
+        const swReady = await p2.evaluate(async () => {
+            if (!navigator.serviceWorker) return false;
+            await navigator.serviceWorker.ready;
+            return true;
+        });
+        check('service worker registered', swReady);
+        const manifest = await p2.evaluate(async () => (await fetch('manifest.webmanifest')).json());
+        check('web app manifest with icons', manifest.display === 'standalone' && manifest.icons.length >= 2);
+        await p2.reload(); // now controlled by the service worker
+        await p2.waitForFunction(() => window.app, null, { timeout: 15000 });
+        await ctx2.setOffline(true);
+        await p2.reload();
+        const offlineOk = await p2.waitForFunction(() => window.app && document.querySelector('#welcome-content').children.length > 0, null, { timeout: 15000 })
+            .then(() => true).catch(() => false);
+        check('app loads while offline', offlineOk);
+        await ctx2.setOffline(false);
+        await ctx2.close();
+    } catch (e) {
+        check('offline test ran', false, e.message);
+    }
+
     section('Page errors');
     const realErrors = pageErrors.filter(e => !/Persistent storage/i.test(e));
     check('no page errors or native dialogs', realErrors.length === 0, realErrors.join(' | '));

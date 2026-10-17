@@ -71,7 +71,32 @@ while ((m = qsIdRe.exec(appJs)) !== null) {
     if (!htmlIds.has(id) && !dynamicIds.has(id)) qsMissing.push(id);
 }
 
+// 5. Service worker app shell: every precached file must exist (a single 404
+//    makes the whole precache fail), and every script/stylesheet the page
+//    loads must be in it (otherwise the app can't start offline).
+const swSrc = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
+const coreMatch = swSrc.match(/const CORE = \[([\s\S]*?)\];/);
+const core = coreMatch ? [...coreMatch[1].matchAll(/'([^']+)'/g)].map(x => x[1]) : [];
+const swProblems = [];
+for (const f of core) {
+    if (f === './') continue;
+    if (!fs.existsSync(path.join(ROOT, f))) swProblems.push(`sw.js precaches missing file: ${f}`);
+}
+const pageAssets = [
+    ...[...doc.querySelectorAll('script[src]')].map(s => s.getAttribute('src')),
+    ...[...doc.querySelectorAll('link[rel="stylesheet"]')].map(l => l.getAttribute('href'))
+];
+for (const a of pageAssets) {
+    if (!core.includes(a)) swProblems.push(`index.html loads ${a}, but sw.js does not precache it`);
+}
+console.log(`  Service worker shell: ${core.length} files, page loads ${pageAssets.length} assets`);
+
 console.log(`\n${'='.repeat(50)}`);
+if (swProblems.length) {
+    console.log(`\x1b[31m✗ Service worker shell problems:\x1b[0m`);
+    swProblems.forEach(x => console.log('  \x1b[31m✗\x1b[0m ' + x));
+    process.exit(1);
+}
 if (missing.length === 0 && qsMissing.length === 0) {
     console.log(`\x1b[32m✓ All ${referencedIds.size} referenced DOM ids exist in index.html\x1b[0m`);
     process.exit(0);
