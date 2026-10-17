@@ -287,8 +287,10 @@ section('11. Engine — pure parsing/formatting helpers');
 
     check('formatScore +', ChessEngine.formatScore({ score: 0.45, mate: null }) === '+0.45',
         ChessEngine.formatScore({ score: 0.45, mate: null }));
-    check('formatScore mate', ChessEngine.formatScore({ score: 100, mate: 3 }) === 'M3',
+    check('formatScore mate', ChessEngine.formatScore({ score: 100, mate: 3 }) === '#3',
         ChessEngine.formatScore({ score: 100, mate: 3 }));
+    check('formatScore mated', ChessEngine.formatScore({ score: -100, mate: -2 }) === '#-2',
+        ChessEngine.formatScore({ score: -100, mate: -2 }));
     check('getBarPercent equal≈50', Math.abs(ChessEngine.getBarPercent({ score: 0, mate: null }) - 50) <= 1);
     check('getBarPercent mate=100', ChessEngine.getBarPercent({ score: 100, mate: 5 }) === 100);
 
@@ -401,6 +403,327 @@ section('12. DB — save/load & backup round-trip (fake-indexeddb)');
         check('evaluate resolves instead of hanging', result === null, JSON.stringify(result));
         check('watchdog fired within reasonable time', elapsed < 2000, elapsed + 'ms');
         check('engine not left in evaluating state', eng.evaluating === false, String(eng.evaluating));
+    }
+
+    // ============================================================
+    section('16. Trainer — full lines (completion, grading, alternatives, learning)');
+    // ============================================================
+    {
+        // Helper: play the current line to the end. `answer(i, expectedSan)` returns
+        // the SAN the player tries at player-move index i (default: the right move).
+        const playLine = (trainer, answer = null) => {
+            for (let guard = 0; guard < 60 && trainer.currentLine && !trainer.lineCompleted; guard++) {
+                if (!trainer.isPlayerMove()) { trainer.playOpponentMove(); continue; }
+                const exp = trainer.getExpectedMove();
+                const want = answer ? answer(trainer.currentMoveIndex, exp.san) : exp.san;
+                const probe = new Chess(trainer.chess.fen());
+                const m = probe.move(want, { sloppy: true });
+                const r = trainer.submitMove(m.from, m.to, m.promotion);
+                if (!r.correct && !r.isAlternative) {
+                    // after a miss, play the right move
+                    const ok = new Chess(trainer.chess.fen()).move(exp.san, { sloppy: true });
+                    trainer.submitMove(ok.from, ok.to, ok.promotion);
+                }
+            }
+        };
+
+        // (a) Line ending on the OPPONENT's move must still be recorded.
+        {
+            const t = new MoveTree('EndsOnOpponent', 'white');
+            t.addLine(['e4', 'e5', 'Nf3', 'Nc6']); // last move is Black's
+            const tr = new Trainer(t);
+            tr.startSession({ mode: 'all', lineLimit: 5, learnNewLines: false });
+            tr.nextLine();
+            playLine(tr);
+            const leaf = t.getNodeAt(['e4', 'e5', 'Nf3', 'Nc6']);
+            check('line ending on opponent move completes', tr.lineCompleted === true);
+            check('…and is scheduled (SM-2 attempts=1)', leaf.stats.attempts === 1, 'attempts=' + leaf.stats.attempts);
+            check('…session counts it', tr.sessionStats.total === 1, 'total=' + tr.sessionStats.total);
+            const p = tr.getProgress();
+            check('progress does not double-count the finished line', p.total === 1 && p.completed === 1, JSON.stringify(p));
+        }
+
+        // (b) A mistake grades the line as failed and re-queues it once.
+        {
+            const t = new MoveTree('Mistake', 'white');
+            t.addLine(['e4', 'e5', 'Nf3', 'Nc6', 'Bb5']);
+            const leaf = t.getNodeAt(['e4', 'e5', 'Nf3', 'Nc6', 'Bb5']);
+            leaf.stats.lastReviewed = Date.now() - 86400000; // already learned
+            leaf.stats.nextReview = Date.now() - 1000;        // due
+            leaf.stats.streak = 3; leaf.stats.interval = 8; leaf.stats.attempts = 3; leaf.stats.correct = 3;
+            const tr = new Trainer(t);
+            tr.startSession({ mode: 'review', lineLimit: 5 });
+            tr.nextLine();
+            check('due line is tested, not learned', tr.isLearning === false);
+            playLine(tr, (i, exp) => (exp === 'Nf3' ? 'Nc3' : exp)); // miss move 2
+            check('mistake resets streak', leaf.stats.streak === 0, 'streak=' + leaf.stats.streak);
+            check('mistake resets interval', leaf.stats.interval === 0, 'interval=' + leaf.stats.interval);
+            check('failed line re-queued for this session', tr.lineQueue.length === 1, 'queue=' + tr.lineQueue.length);
+            check('miss counted once per position', tr.sessionStats.wrong === 1, 'wrong=' + tr.sessionStats.wrong);
+            const nf3 = t.getNodeAt(['e4', 'e5', 'Nf3']);
+            check('per-move stats record the miss', nf3.moveStats.attempts === 1 && nf3.moveStats.correct === 0,
+                JSON.stringify(nf3.moveStats));
+            const e4 = t.getNodeAt(['e4']);
+            check('per-move stats record the hit', e4.moveStats.attempts === 1 && e4.moveStats.correct === 1,
+                JSON.stringify(e4.moveStats));
+            // Retry passes: not re-queued again
+            tr.nextLine();
+            playLine(tr);
+            check('re-tested line passes and is not re-queued again', tr.lineQueue.length === 0 && leaf.stats.streak === 1,
+                `queue=${tr.lineQueue.length} streak=${leaf.stats.streak}`);
+        }
+
+        // (c) Perfect review grows the interval.
+        {
+            const t = new MoveTree('Perfect', 'white');
+            t.addLine(['d4', 'd5', 'c4']);
+            const leaf = t.getNodeAt(['d4', 'd5', 'c4']);
+            Object.assign(leaf.stats, { lastReviewed: Date.now() - 1e8, nextReview: Date.now() - 1, streak: 2, interval: 3, attempts: 2, correct: 2 });
+            const tr = new Trainer(t);
+            tr.startSession({ mode: 'review' });
+            tr.nextLine();
+            playLine(tr);
+            check('perfect review increments streak', leaf.stats.streak === 3, 'streak=' + leaf.stats.streak);
+            check('perfect review grows interval beyond 3 days', leaf.stats.interval > 3, 'interval=' + leaf.stats.interval);
+            check('perfect review not re-queued', tr.lineQueue.length === 0);
+        }
+
+        // (d) Another repertoire move is an "alternative", not a mistake, and doesn't derail the line.
+        {
+            const t = new MoveTree('Alt', 'white');
+            t.addLine(['e4', 'e5', 'Nf3']);
+            t.addLine(['e4', 'e5', 'Bc4']);
+            const tr = new Trainer(t);
+            tr.startSession({ mode: 'all', learnNewLines: false });
+            tr.nextLine();
+            // play until it's our second move
+            tr.submitMove('e2', 'e4'); tr.playOpponentMove();
+            const exp = tr.getExpectedMove().san;
+            const other = exp === 'Nf3' ? { from: 'f1', to: 'c4' } : { from: 'g1', to: 'f3' };
+            const fenBefore = tr.chess.fen();
+            const r = tr.submitMove(other.from, other.to);
+            check('alternative repertoire move flagged', r.isAlternative === true && r.correct === false, JSON.stringify(r));
+            check('alternative is not counted as a mistake', tr.sessionStats.wrong === 0 && tr.lineMistakes === 0);
+            check('alternative is taken back (board unchanged)', tr.chess.fen() === fenBefore);
+            const okMove = new Chess(tr.chess.fen()).move(exp);
+            const r2 = tr.submitMove(okMove.from, okMove.to);
+            check('line continues normally after alternative', r2.correct === true && tr.lineCompleted === true);
+        }
+
+        // (e) New lines are learned first, then scheduled for a review in ~4h.
+        {
+            const t = new MoveTree('Learn', 'black');
+            t.addLine(['e4', 'c5', 'Nf3', 'd6']);
+            const tr = new Trainer(t);
+            tr.startSession({ mode: 'new' });
+            const info = tr.nextLine();
+            check('new line starts in learning mode', info.isLearning === true && tr.isLearning === true);
+            check('black repertoire: opponent (White) moves first', tr.isPlayerMove() === false);
+            playLine(tr);
+            const leaf = t.getNodeAt(['e4', 'c5', 'Nf3', 'd6']);
+            check('learned line gets a schedule', !!leaf.stats.lastReviewed && !!leaf.stats.nextReview);
+            const delay = leaf.stats.nextReview - leaf.stats.lastReviewed;
+            check('first review ~4h after learning', Math.abs(delay - 4 * 3600 * 1000) < 1000, 'delay=' + delay);
+            check('learning does not count graded attempts', leaf.stats.attempts === 0, 'attempts=' + leaf.stats.attempts);
+            check('learning does not touch per-move stats', t.getNodeAt(['e4', 'c5']).moveStats.attempts === 0);
+            check('session records learned line', tr.sessionStats.learnedLines === 1);
+            // persistence of a learned-but-never-graded line
+            const t2 = MoveTree.deserialize(JSON.parse(JSON.stringify(t.serialize())));
+            const leaf2 = t2.getNodeAt(['e4', 'c5', 'Nf3', 'd6']);
+            check('learned state survives save/load', leaf2.stats.lastReviewed === leaf.stats.lastReviewed,
+                `${leaf2.stats.lastReviewed} vs ${leaf.stats.lastReviewed}`);
+        }
+
+        // (f) Show-move counts as a miss and can complete the line.
+        {
+            const t = new MoveTree('Show', 'white');
+            t.addLine(['e4']);
+            const tr = new Trainer(t);
+            tr.startSession({ mode: 'all', learnNewLines: false });
+            tr.nextLine();
+            const r = tr.playCorrectMove();
+            check('show-move completes a one-move line', r && r.isLineComplete === true && tr.lineCompleted === true);
+            check('show-move graded as failure', t.getNodeAt(['e4']).stats.streak === 0 && tr.lineMistakes === 1);
+        }
+
+        // (g) Lines without any player move are not trained (black rep, single White move).
+        {
+            const t = new MoveTree('NoPlayerMove', 'black');
+            t.addLine(['e4']);
+            t.addLine(['d4', 'Nf6']);
+            const tr = new Trainer(t);
+            const lines = [];
+            tr._collectAllLines(t.root, [], lines);
+            check('opponent-only line skipped', lines.length === 1 && lines[0].join(' ') === 'd4 Nf6', JSON.stringify(lines));
+        }
+
+        // (h) Per-move stats survive serialization; tree accuracy uses them.
+        {
+            const t = new MoveTree('MS', 'white');
+            t.addLine(['e4', 'e5']);
+            const e4 = t.getNodeAt(['e4']);
+            Object.assign(e4.moveStats, { attempts: 4, correct: 3, streak: 2, lastSeen: 1700000000000 });
+            const t2 = MoveTree.deserialize(JSON.parse(JSON.stringify(t.serialize())));
+            const e4b = t2.getNodeAt(['e4']);
+            check('moveStats round-trip', JSON.stringify(e4b.moveStats) === JSON.stringify(e4.moveStats), JSON.stringify(e4b.moveStats));
+            check('getNodeAccuracy uses per-move stats', MoveTree.getNodeAccuracy(e4b) === 75, String(MoveTree.getNodeAccuracy(e4b)));
+            const weak = t2.getWeakestMoves(5, 2);
+            check('getWeakestMoves finds e4 at 75%', weak.length === 1 && weak[0].accuracy === 75, JSON.stringify(weak.map(w => w.path)));
+        }
+    }
+
+    // ============================================================
+    section('17. MoveTree — mainline persistence, counts, due with disabled branches');
+    // ============================================================
+    {
+        const t = new MoveTree('Main', 'white');
+        t.addLine(['e4', 'e5']);
+        t.addLine(['d4', 'd5']);
+        t.setMainline(t.getNodeAt(['d4']));
+        const t2 = MoveTree.deserialize(JSON.parse(JSON.stringify(t.serialize())));
+        check('setMainline survives reload', t2.root.getMainline().move === 'd4', t2.root.getMainline().move);
+        check('only one mainline after reload', [...t2.root.children.values()].filter(n => n.priority === 0).length === 1,
+            [...t2.root.children.values()].map(n => n.move + ':' + n.priority).join(','));
+
+        const empty = new MoveTree('Empty', 'white');
+        check('empty repertoire has 0 lines', empty.countLines() === 0, String(empty.countLines()));
+        const t3 = new MoveTree('Counts', 'white');
+        t3.addLine(['e4', 'e5', 'Nf3']);
+        check('countLines then countNodes both fresh', t3.countLines() === 1 && t3.countNodes() === 3,
+            `${t3.countLines()} lines / ${t3.countNodes()} nodes`);
+        t3.addLine(['d4']);
+        check('counts refresh after adding a line', t3.countNodes() === 4 && t3.countLines() === 2,
+            `${t3.countLines()} lines / ${t3.countNodes()} nodes`);
+
+        const t4 = new MoveTree('Due', 'white');
+        t4.addLine(['e4', 'e5', 'Nf3']);
+        t4.addLine(['d4', 'd5', 'c4']);
+        for (const p of [['e4', 'e5', 'Nf3'], ['d4', 'd5', 'c4']]) {
+            Object.assign(t4.getNodeAt(p).stats, { lastReviewed: 1, nextReview: 2, attempts: 1, correct: 1 });
+        }
+        check('both lines due', t4.getStatsOverview().due === 2);
+        t4.getNodeAt(['d4']).enabled = false; // disable the parent only
+        check('due ignores lines under a disabled parent', t4.getStatsOverview().due === 1, String(t4.getStatsOverview().due));
+    }
+
+    // ============================================================
+    section('18. Engine — perspective, sequencing, game over, MultiPV (fake worker)');
+    // ============================================================
+    {
+        // A scripted stand-in for the Stockfish worker.
+        class FakeWorker {
+            constructor() { this.sent = []; this.onmessage = null; }
+            postMessage(cmd) { this.sent.push(cmd); }
+            emit(line) { this.onmessage && this.onmessage({ data: line }); }
+            terminate() {}
+        }
+        const tick = () => new Promise(r => setTimeout(r, 0));
+        const mkEngine = () => {
+            const e = new ChessEngine();
+            const w = new FakeWorker();
+            e.worker = w; e.ready = true;
+            w.onmessage = (ev) => e._handleMessage(ev.data);
+            return { e, w };
+        };
+        const AFTER_E4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1';
+        const START = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
+        // Perspective: Black to move, Stockfish says "-34" for Black → +0.34 for White.
+        {
+            const { e, w } = mkEngine();
+            const p = e.evaluate(AFTER_E4, 12);
+            await tick();
+            check('sends position + go', w.sent.includes('position fen ' + AFTER_E4) && w.sent.includes('go depth 12'), JSON.stringify(w.sent));
+            w.emit('info depth 12 seldepth 16 multipv 1 score cp -34 nodes 9000 nps 90000 pv e7e5 g1f3');
+            w.emit('bestmove e7e5 ponder g1f3');
+            const r = await p;
+            check('black-to-move score converted to White perspective', r && Math.abs(r.score - 0.34) < 1e-9, r && r.score);
+            check('bar favours White', ChessEngine.getBarPercent(r) > 50, String(ChessEngine.getBarPercent(r)));
+            check('bestMove from bestmove line', r.bestMove === 'e7e5', r.bestMove);
+            const mateR = (() => { const x = e._parseInfo('info depth 5 score mate 2 pv e7e5'); return ChessEngine._toWhitePerspective(x, 'b'); })();
+            check('black mating → negative mate for White', mateR.mate === -2, String(mateR.mate));
+        }
+
+        // Sequencing: a stopped search's late lines/bestmove must not leak into the next one.
+        {
+            const { e, w } = mkEngine();
+            const pa = e.evaluate(START, 18);
+            await tick();
+            w.emit('info depth 10 multipv 1 score cp 30 nodes 1 nps 1 pv e2e4');
+            const pb = e.evaluate(AFTER_E4, 18);   // supersedes A
+            await tick();
+            check('new request sends stop to the running search', w.sent.filter(c => c === 'stop').length === 1);
+            check('B not started before A has stopped', w.sent.filter(c => c.startsWith('position')).length === 1);
+            // Late output from A (after stop) — must be ignored
+            w.emit('info depth 11 multipv 1 score cp 999 nodes 1 nps 1 pv d2d4');
+            w.emit('bestmove e2e4');
+            await tick();
+            check('B starts after A\'s bestmove', w.sent.filter(c => c.startsWith('position')).length === 2 &&
+                w.sent[w.sent.length - 1] === 'go depth 18', JSON.stringify(w.sent.slice(-3)));
+            w.emit('info depth 18 multipv 1 score cp -25 nodes 1 nps 1 pv e7e5');
+            w.emit('bestmove e7e5');
+            const [ra, rb] = await Promise.all([pa, pb]);
+            check('superseded search resolves null', ra === null, JSON.stringify(ra));
+            check('B gets its own result (not A\'s +9.99)', rb && rb.fen === AFTER_E4 && Math.abs(rb.score - 0.25) < 1e-9,
+                JSON.stringify(rb && { fen: rb.fen, score: rb.score }));
+            check('superseded result is not cached', !e.cache.has(START + '|18|1'));
+            check('completed result is cached', e.cache.has(AFTER_E4 + '|18|1'));
+        }
+
+        // Game over positions resolve immediately, without the engine.
+        {
+            const { e, w } = mkEngine();
+            const MATED = 'rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3'; // fool's mate
+            const r = await e.evaluate(MATED, 18);
+            check('checkmate detected', r.terminal === 'checkmate' && r.winner === 'b', JSON.stringify(r));
+            check('checkmate formatted 0-1', ChessEngine.formatScore(r) === '0-1');
+            check('checkmate bar = 0 (Black won)', ChessEngine.getBarPercent(r) === 0);
+            check('engine not queried for game over', !w.sent.some(c => c.startsWith('go')));
+        }
+
+        // MultiPV: lines collected by rank, setoption sent once.
+        {
+            const { e, w } = mkEngine();
+            const p = e.evaluate(START, 14, { multiPV: 3 });
+            await tick();
+            check('MultiPV configured', w.sent.includes('setoption name MultiPV value 3'));
+            w.emit('info depth 14 multipv 1 score cp 35 nodes 1 nps 1 pv e2e4 e7e5');
+            w.emit('info depth 14 multipv 2 score cp 30 nodes 1 nps 1 pv d2d4 d7d5');
+            w.emit('info depth 14 multipv 3 score cp 22 nodes 1 nps 1 pv g1f3 d7d5');
+            w.emit('info depth 14 multipv 1 score cp 40 lowerbound nodes 1 nps 1 pv e2e4');
+            w.emit('bestmove e2e4');
+            const r = await p;
+            check('three lines returned', r.lines.length === 3, String(r.lines.length));
+            check('lines ordered by rank', r.lines.map(l => l.pv[0]).join(',') === 'e2e4,d2d4,g1f3', r.lines.map(l => l.pv[0]).join(','));
+            check('bound lines ignored', Math.abs(r.score - 0.35) < 1e-9, String(r.score));
+            check('pvToSan converts PV', ChessEngine.pvToSan(START, ['e2e4', 'e7e5', 'g1f3']).join(' ') === 'e4 e5 Nf3');
+        }
+
+        // Live updates carry the FEN they belong to.
+        {
+            const { e, w } = mkEngine();
+            const seen = [];
+            e.onInfo = (snap) => seen.push(snap);
+            const p = e.evaluate(AFTER_E4, 10);
+            await tick();
+            w.emit('info depth 8 multipv 1 score cp -20 nodes 1 nps 1 pv e7e5 g1f3');
+            w.emit('bestmove e7e5');
+            await p;
+            check('onInfo snapshot includes fen, pv and white-perspective score',
+                seen.length === 1 && seen[0].fen === AFTER_E4 && seen[0].pv.length === 2 && seen[0].score > 0,
+                JSON.stringify(seen[0]));
+        }
+
+        // Worker URL passes the wasm location explicitly (Windows/Electron file:// safety).
+        {
+            const url = ChessEngine.workerUrl();
+            check('worker url is relative', url.startsWith('vendor/stockfish/stockfish.js#'), url);
+            const wasm = decodeURIComponent(url.split('#')[1]);
+            check('wasm url absolute and ends with stockfish.wasm', /^[a-z]+:\/\/.*\/vendor\/stockfish\/stockfish\.wasm$/.test(wasm), wasm);
+            const winBase = 'file:///C:/Users/super/chess/chess/index.html';
+            check('Windows file:// base resolves to a file URL', new URL('vendor/stockfish/stockfish.wasm', winBase).href ===
+                'file:///C:/Users/super/chess/chess/vendor/stockfish/stockfish.wasm');
+        }
     }
 
     process.exit(report());

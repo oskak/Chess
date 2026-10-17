@@ -50,6 +50,7 @@ sandbox.navigator = {
 };
 sandbox.setTimeout = setTimeout;
 sandbox.clearTimeout = clearTimeout;
+sandbox.URL = URL;
 sandbox.performance = { now: () => Date.now() };
 vm.createContext(sandbox);
 

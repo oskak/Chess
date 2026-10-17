@@ -1,28 +1,40 @@
 /**
  * Spaced Repetition Trainer Engine
  *
- * Uses SM-2 algorithm for scheduling reviews.
- * Manages training sessions, tracks progress, picks lines to practice.
+ * A repertoire is a move tree; every leaf is a training "line". Lines are
+ * scheduled with SM-2 on their leaf node. Within a line every player move is
+ * also tracked individually (node.moveStats) so weak spots can be found.
+ *
+ * Per line: nextLine() → playOpponentMove() / submitMove() ... The line
+ * completes automatically when its last move is played — by either side, or
+ * via playCorrectMove() — and is graded by the mistakes made along the way.
+ *
+ * New (never-seen) lines are first *learned*: the expected move is revealed
+ * and the player replays it. Learned lines come back for a cold review later.
  */
 
 class Trainer {
+    // First cold review of a freshly learned line.
+    static LEARN_REVIEW_DELAY_MS = 4 * 60 * 60 * 1000;
+
     constructor(moveTree) {
         this.tree = moveTree;
         this.chess = new Chess();
-        this.currentLine = null;        // Current line being practiced
-        this.currentMoveIndex = 0;      // Current position in the line
-        this.currentNode = null;        // Current node in the tree
-        this.sessionStats = {
-            total: 0,
-            correct: 0,
-            wrong: 0,
-            newLines: 0,
-            reviewedLines: 0
-        };
-        this.lineQueue = [];            // Lines to practice
+        this.currentLine = null;        // Current line being practiced (array of SAN)
+        this.currentMoveIndex = 0;      // Index of the next move to be played
+        this.currentNode = null;        // Tree node of the position on the board
+        this.sessionStats = this._emptyStats();
+        this.lineQueue = [];            // Lines still to practice this session
         this.completedLines = [];       // Lines completed this session
-        this.isPlayerTurn = false;
         this.state = 'idle';            // idle, playing, waiting, finished
+
+        this.learnNewLines = true;      // reveal moves of never-seen lines
+        this.isLearning = false;        // current line is being learned, not tested
+        this.lineMistakes = 0;          // positions missed in the current line
+        this.lineCompleted = false;
+        this.positionFailed = false;    // player already erred at the current move
+        this._requeued = new Set();     // failed lines already re-queued this session
+
         this.wrongMoveCallback = null;
         this.correctMoveCallback = null;
         this.opponentMoveCallback = null;
@@ -30,22 +42,40 @@ class Trainer {
         this.sessionCompleteCallback = null;
     }
 
+    _emptyStats() {
+        return {
+            total: 0,          // lines completed
+            correct: 0,        // player moves found on the first try
+            wrong: 0,          // player moves missed (counted once per position)
+            newLines: 0,       // first cold review of a line
+            reviewedLines: 0,  // later reviews
+            perfectLines: 0,   // reviewed lines without a single miss
+            learnedLines: 0    // lines learned (shown) this session
+        };
+    }
+
     /**
      * Start a training session.
-     * @param {Object} options - Training options
+     * @param {Object} options
      * @param {number} options.lineLimit - Max lines per session
-     * @param {string} options.mode - 'review' (due lines), 'new' (unlearned), 'mix' (both), 'all'
-     * @param {number[]} options.startFromMoves - Optional: start from this position
+     * @param {string} options.mode - 'review' (due), 'new' (unlearned), 'mix' (both), 'all'
+     * @param {string[]} options.startFromMoves - Only train lines below this position
+     * @param {boolean} options.learnNewLines - Reveal moves of never-seen lines (default true)
      */
     startSession(options = {}) {
         const {
             lineLimit = 20,
             mode = 'mix',
-            startFromMoves = null
+            startFromMoves = null,
+            learnNewLines = true
         } = options;
 
-        this.sessionStats = { total: 0, correct: 0, wrong: 0, newLines: 0, reviewedLines: 0 };
+        this.learnNewLines = learnNewLines;
+        this.sessionStats = this._emptyStats();
         this.completedLines = [];
+        this._requeued = new Set();
+        this.currentLine = null;
+        this.lineCompleted = false;
         this.lineQueue = this._buildLineQueue(mode, lineLimit, startFromMoves);
         this.state = this.lineQueue.length > 0 ? 'playing' : 'finished';
 
@@ -61,7 +91,7 @@ class Trainer {
         const startNode = startFrom ? this.tree.getNodeAt(startFrom) : this.tree.root;
         if (!startNode) return [];
 
-        this._collectAllLines(startNode, startFrom || [], allLines);
+        this._collectAllLines(startNode, startFrom ? [...startFrom] : [], allLines);
 
         const newLines = [];
         const dueLines = [];
@@ -85,7 +115,7 @@ class Trainer {
         this._shuffle(dueLines);
         this._shuffle(otherLines);
 
-        // Sort due lines: most overdue first
+        // Most overdue first
         dueLines.sort((a, b) => {
             const nodeA = this.tree.getNodeAt(a);
             const nodeB = this.tree.getNodeAt(b);
@@ -124,7 +154,8 @@ class Trainer {
         if (!node.enabled && currentPath.length > 0) return;
 
         if (node.isLeaf() && currentPath.length > 0) {
-            lines.push([...currentPath]);
+            // A line in which the player never moves has nothing to train.
+            if (this._hasPlayerMove(currentPath)) lines.push([...currentPath]);
             return;
         }
         for (const [moveSan, child] of node.children) {
@@ -132,6 +163,18 @@ class Trainer {
             this._collectAllLines(child, currentPath, lines);
             currentPath.pop();
         }
+    }
+
+    /** True if move index i (0 = White's first move) is played by the user. */
+    _isPlayerIndex(i) {
+        return (this.tree.color === 'white') === (i % 2 === 0);
+    }
+
+    _hasPlayerMove(line) {
+        for (let i = 0; i < line.length; i++) {
+            if (this._isPlayerIndex(i)) return true;
+        }
+        return false;
     }
 
     _shuffle(arr) {
@@ -148,6 +191,7 @@ class Trainer {
     nextLine() {
         if (this.lineQueue.length === 0) {
             this.state = 'finished';
+            this.currentLine = null;
             if (this.sessionCompleteCallback) {
                 this.sessionCompleteCallback(this.sessionStats);
             }
@@ -159,18 +203,18 @@ class Trainer {
         this.currentNode = this.tree.root;
         this.chess.reset();
         this.state = 'playing';
+        this.lineMistakes = 0;
+        this.lineCompleted = false;
+        this.positionFailed = false;
 
-        // Determine if first move is player's
-        const isWhiteRepertoire = this.tree.color === 'white';
-        // First move (index 0) is always white's move
-        // If we play white, moves at even indices are ours
-        // If we play black, moves at odd indices are ours
-        this.isPlayerTurn = isWhiteRepertoire; // White plays first
+        const leaf = this.tree.getNodeAt(this.currentLine);
+        this.isLearning = this.learnNewLines && !!leaf && !leaf.stats.lastReviewed;
 
         return {
             line: this.currentLine,
             fen: this.chess.fen(),
-            isPlayerTurn: this.isPlayerTurn,
+            isPlayerTurn: this.isPlayerMove(),
+            isLearning: this.isLearning,
             totalMoves: this.currentLine.length,
             currentMove: 0
         };
@@ -181,9 +225,30 @@ class Trainer {
      */
     isPlayerMove() {
         if (!this.currentLine || this.currentMoveIndex >= this.currentLine.length) return false;
-        const isWhiteRepertoire = this.tree.color === 'white';
-        const isWhiteToMove = this.currentMoveIndex % 2 === 0;
-        return isWhiteRepertoire === isWhiteToMove;
+        return this._isPlayerIndex(this.currentMoveIndex);
+    }
+
+    /**
+     * The move expected next in the current line, with squares for arrows/hints.
+     * @returns {{san, from, to, promotion}|null}
+     */
+    getExpectedMove() {
+        if (!this.currentLine || this.currentMoveIndex >= this.currentLine.length) return null;
+        const probe = new Chess(this.chess.fen());
+        const m = probe.move(this.currentLine[this.currentMoveIndex], { sloppy: true });
+        return m ? { san: m.san, from: m.from, to: m.to, promotion: m.promotion } : null;
+    }
+
+    /** How many of the player's moves in this line are done, out of how many. */
+    getLinePosition() {
+        if (!this.currentLine) return { done: 0, total: 0 };
+        let total = 0, done = 0;
+        for (let i = 0; i < this.currentLine.length; i++) {
+            if (!this._isPlayerIndex(i)) continue;
+            total++;
+            if (i < this.currentMoveIndex) done++;
+        }
+        return { done, total };
     }
 
     /**
@@ -191,31 +256,28 @@ class Trainer {
      * Returns null if it's the player's turn or line is complete.
      */
     getOpponentMove() {
-        if (this.isPlayerMove()) return null;
+        if (!this.currentLine || this.isPlayerMove()) return null;
         if (this.currentMoveIndex >= this.currentLine.length) return null;
-
-        const expectedMove = this.currentLine[this.currentMoveIndex];
-        return expectedMove;
+        return this.currentLine[this.currentMoveIndex];
     }
 
     /**
      * Play the opponent's move automatically.
      */
     playOpponentMove() {
+        if (this.state !== 'playing') return null;
         const move = this.getOpponentMove();
         if (!move) return null;
 
         const result = this.chess.move(move, { sloppy: true });
         if (!result) return null;
 
-        this.currentNode = this.currentNode.getChild(result.san) || this.currentNode;
-        this.currentMoveIndex++;
-
+        const isLineComplete = this._advance(result);
         const info = {
             move: result,
             fen: this.chess.fen(),
             moveIndex: this.currentMoveIndex,
-            isLineComplete: this.currentMoveIndex >= this.currentLine.length
+            isLineComplete
         };
 
         if (this.opponentMoveCallback) {
@@ -227,17 +289,22 @@ class Trainer {
 
     /**
      * Submit a player's move attempt.
-     * @param {string} moveSan - The move in SAN or from-to format
-     * @returns {Object} Result with correct/wrong status
+     * @returns {Object} { valid, correct, isAlternative, ... }
+     *   - correct: the expected move of this line
+     *   - isAlternative: another move from the repertoire at this position;
+     *     not counted as a mistake, the player is asked for this line's move
+     *   - otherwise a genuine mistake; the move is taken back
      */
     submitMove(from, to, promotion) {
-        if (!this.currentLine || this.currentMoveIndex >= this.currentLine.length) {
+        if (this.state !== 'playing' || !this.currentLine || this.currentMoveIndex >= this.currentLine.length) {
             return { valid: false, error: 'No active line' };
+        }
+        if (!this.isPlayerMove()) {
+            return { valid: false, error: 'Not your move' };
         }
 
         const expectedMove = this.currentLine[this.currentMoveIndex];
 
-        // Try to make the move
         const moveObj = { from, to };
         if (promotion) moveObj.promotion = promotion;
 
@@ -246,135 +313,189 @@ class Trainer {
             return { valid: false, error: 'Illegal move' };
         }
 
-        // Check if it matches expected move
-        const isCorrect = result.san === expectedMove;
-
-        // Also check if it's an acceptable alternative (branch in tree)
-        let isAlternative = false;
-        if (!isCorrect && this.currentNode) {
-            const altNode = this.currentNode.getChild(result.san);
-            if (altNode && altNode.hasChildren()) {
-                isAlternative = true;
+        if (result.san === expectedMove) {
+            const node = this.currentNode ? this.currentNode.getChild(result.san) : null;
+            if (!this.isLearning) {
+                if (node) this._recordMoveAttempt(node, !this.positionFailed);
+                if (!this.positionFailed) this.sessionStats.correct++;
             }
-        }
+            this.positionFailed = false;
 
-        if (isCorrect || isAlternative) {
-            // Correct move
-            this.currentNode = this.currentNode.getChild(result.san) || this.currentNode;
-            this.currentMoveIndex++;
-            this.sessionStats.correct++;
-
+            const isLineComplete = this._advance(result);
             const info = {
                 valid: true,
                 correct: true,
-                isAlternative,
+                isAlternative: false,
                 move: result,
                 fen: this.chess.fen(),
                 moveIndex: this.currentMoveIndex,
-                isLineComplete: this.currentMoveIndex >= this.currentLine.length
+                isLineComplete
             };
 
             if (this.correctMoveCallback) {
                 this.correctMoveCallback(info);
             }
-
-            if (info.isLineComplete) {
-                this._onLineComplete(true);
-            }
-
-            return info;
-        } else {
-            // Wrong move - undo it
-            this.chess.undo();
-            this.sessionStats.wrong++;
-
-            // Get all correct moves at this position
-            const correctMoves = [];
-            if (this.currentNode) {
-                for (const [san] of this.currentNode.children) {
-                    correctMoves.push(san);
-                }
-            } else {
-                correctMoves.push(expectedMove);
-            }
-
-            const info = {
-                valid: true,
-                correct: false,
-                played: result.san,
-                expected: expectedMove,
-                correctMoves,
-                fen: this.chess.fen(),
-                moveIndex: this.currentMoveIndex
-            };
-
-            if (this.wrongMoveCallback) {
-                this.wrongMoveCallback(info);
-            }
-
             return info;
         }
+
+        // Not the expected move — take it back.
+        this.chess.undo();
+
+        const base = {
+            valid: true,
+            correct: false,
+            played: result.san,
+            expected: expectedMove,
+            correctMoves: [expectedMove],
+            fen: this.chess.fen(),
+            moveIndex: this.currentMoveIndex
+        };
+
+        // Another repertoire move: not wrong, just not the line being trained.
+        if (this.currentNode && this.currentNode.getChild(result.san)) {
+            return { ...base, isAlternative: true };
+        }
+
+        if (!this.isLearning) this._markPositionFailed();
+
+        const info = { ...base, isAlternative: false };
+        if (this.wrongMoveCallback) {
+            this.wrongMoveCallback(info);
+        }
+        return info;
     }
 
     /**
-     * Force-play the correct move (after showing it to the user).
+     * The player asked for a hint (e.g. the piece to move). Counts as a miss
+     * for grading, because the move wasn't recalled unaided.
+     */
+    useHint() {
+        if (!this.isPlayerMove() || this.isLearning) return;
+        this._markPositionFailed();
+    }
+
+    /**
+     * Force-play the expected move (after showing it to the user).
      */
     playCorrectMove() {
-        if (!this.currentLine || this.currentMoveIndex >= this.currentLine.length) return null;
+        if (this.state !== 'playing' || !this.isPlayerMove()) return null;
 
         const expectedMove = this.currentLine[this.currentMoveIndex];
         const result = this.chess.move(expectedMove, { sloppy: true });
         if (!result) return null;
 
-        this.currentNode = this.currentNode.getChild(result.san) || this.currentNode;
-        this.currentMoveIndex++;
+        if (!this.isLearning) {
+            // Asking for the answer means it wasn't known.
+            this._markPositionFailed();
+            const node = this.currentNode ? this.currentNode.getChild(result.san) : null;
+            if (node) this._recordMoveAttempt(node, false);
+        }
+        this.positionFailed = false;
 
+        const isLineComplete = this._advance(result);
         return {
             move: result,
             fen: this.chess.fen(),
             moveIndex: this.currentMoveIndex,
-            isLineComplete: this.currentMoveIndex >= this.currentLine.length
+            isLineComplete
         };
     }
 
+    _markPositionFailed() {
+        if (this.positionFailed) return;
+        this.positionFailed = true;
+        this.lineMistakes++;
+        this.sessionStats.wrong++;
+    }
+
+    _recordMoveAttempt(node, correct) {
+        const ms = node.moveStats;
+        ms.attempts++;
+        if (correct) {
+            ms.correct++;
+            ms.streak++;
+        } else {
+            ms.streak = 0;
+        }
+        ms.lastSeen = Date.now();
+    }
+
+    /** Move along the line after a move was played; completes the line at its end. */
+    _advance(moveResult) {
+        const child = this.currentNode ? this.currentNode.getChild(moveResult.san) : null;
+        if (child) this.currentNode = child;
+        this.currentMoveIndex++;
+        const isLineComplete = this.currentMoveIndex >= this.currentLine.length;
+        if (isLineComplete && !this.lineCompleted) {
+            this._completeLine();
+        }
+        return isLineComplete;
+    }
+
     /**
-     * Handle line completion - update spaced repetition stats.
+     * Handle line completion: schedule the line and record session stats.
      */
-    _onLineComplete(wasCorrect) {
+    _completeLine() {
+        this.lineCompleted = true;
+        this.state = 'waiting';
         this.sessionStats.total++;
 
+        const wasPerfect = this.lineMistakes === 0;
         const leafNode = this.tree.getNodeAt(this.currentLine);
-        if (!leafNode) return;
 
-        const isNew = !leafNode.stats.lastReviewed;
-        if (isNew) {
-            this.sessionStats.newLines++;
-        } else {
-            this.sessionStats.reviewedLines++;
+        if (leafNode) {
+            if (this.isLearning) {
+                this.sessionStats.learnedLines++;
+                this._markLearned(leafNode);
+            } else {
+                // A line never reviewed cold before (learning was skipped or disabled)
+                if (leafNode.stats.attempts === 0) this.sessionStats.newLines++;
+                else this.sessionStats.reviewedLines++;
+                if (wasPerfect) this.sessionStats.perfectLines++;
+
+                this._updateSM2(leafNode, wasPerfect ? 4 : 1);
+
+                // Re-test a failed line once more at the end of the session.
+                const key = this.currentLine.join(' ');
+                if (!wasPerfect && !this._requeued.has(key)) {
+                    this._requeued.add(key);
+                    this.lineQueue.push(this.currentLine);
+                }
+            }
         }
-
-        // Update SM-2 stats
-        this._updateSM2(leafNode, wasCorrect ? 4 : 1);
 
         this.completedLines.push({
             line: this.currentLine,
-            correct: wasCorrect
+            correct: wasPerfect,
+            learned: this.isLearning,
+            mistakes: this.lineMistakes
         });
 
         if (this.lineCompleteCallback) {
             this.lineCompleteCallback({
                 line: this.currentLine,
-                correct: wasCorrect,
+                correct: wasPerfect,
+                learned: this.isLearning,
                 stats: this.sessionStats,
                 remaining: this.lineQueue.length
             });
         }
     }
 
+    /** Schedule the first cold review of a line that was just learned. */
+    _markLearned(node) {
+        const stats = node.stats;
+        const now = Date.now();
+        stats.lastReviewed = now;
+        stats.streak = 0;
+        stats.interval = 0;
+        stats.nextReview = now + Trainer.LEARN_REVIEW_DELAY_MS;
+    }
+
     /**
      * SM-2 Spaced Repetition Algorithm
      * @param {MoveTreeNode} node - The node to update
-     * @param {number} quality - Response quality (0-5, where 4+ is correct)
+     * @param {number} quality - Response quality (0-5, where 3+ is correct)
      */
     _updateSM2(node, quality) {
         const stats = node.stats;
@@ -412,11 +533,10 @@ class Trainer {
     }
 
     /**
-     * Skip current line and mark it for later review.
+     * Skip current line and put it at the back of the queue.
      */
     skipLine() {
-        if (this.currentLine) {
-            // Put it back at the end of the queue
+        if (this.currentLine && !this.lineCompleted) {
             this.lineQueue.push(this.currentLine);
         }
         return this.nextLine();
@@ -426,17 +546,20 @@ class Trainer {
      * Mark the current line as failed and move on.
      */
     failLine() {
-        if (this.currentLine) {
-            this._onLineComplete(false);
+        if (this.currentLine && !this.lineCompleted) {
+            this.lineMistakes = Math.max(1, this.lineMistakes);
+            this._completeLine();
         }
         return this.nextLine();
     }
 
     getProgress() {
-        const total = this.sessionStats.total + this.lineQueue.length + (this.currentLine ? 1 : 0);
+        const inFlight = this.currentLine && !this.lineCompleted ? 1 : 0;
+        const remaining = this.lineQueue.length + inFlight;
+        const total = this.sessionStats.total + remaining;
         return {
             completed: this.sessionStats.total,
-            remaining: this.lineQueue.length + (this.currentLine ? 1 : 0),
+            remaining,
             total,
             percent: total > 0 ? Math.round((this.sessionStats.total / total) * 100) : 0,
             stats: { ...this.sessionStats }

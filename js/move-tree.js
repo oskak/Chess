@@ -21,7 +21,8 @@ class MoveTreeNode {
         this.enabled = true;        // Whether this node is active for training
         this.collapsed = false;     // UI state for tree view (collapsed branch)
 
-        // Training stats (SM-2 spaced repetition)
+        // Line-level spaced-repetition stats (SM-2). Only meaningful on leaf
+        // nodes, which represent a complete training line.
         this.stats = {
             attempts: 0,
             correct: 0,
@@ -30,6 +31,15 @@ class MoveTreeNode {
             interval: 0,       // days
             ease: 2.5,         // SM-2 ease factor
             streak: 0          // consecutive correct
+        };
+
+        // Per-move stats: how reliably the player finds THIS move when it is
+        // their turn in training. Drives tree colours and weak-spot detection.
+        this.moveStats = {
+            attempts: 0,
+            correct: 0,
+            streak: 0,
+            lastSeen: null
         };
     }
 
@@ -242,22 +252,28 @@ class MoveTree {
         return groups;
     }
 
+    // Node and line counts are cached together so that calling one never
+    // leaves the other stale.
+    _refreshCounts() {
+        if (!this._dirty) return;
+        let nodes = 0;
+        let lines = 0;
+        this._traverse(this.root, (node) => {
+            nodes++;
+            if (node !== this.root && node.isLeaf()) lines++;
+        });
+        this._nodeCount = nodes - 1;
+        this._lineCount = lines;
+        this._dirty = false;
+    }
+
     countNodes() {
-        if (!this._dirty) return this._nodeCount;
-        let count = 0;
-        this._traverse(this.root, () => count++);
-        this._nodeCount = count - 1;
+        this._refreshCounts();
         return this._nodeCount;
     }
 
     countLines() {
-        if (!this._dirty) return this._lineCount;
-        let count = 0;
-        this._traverse(this.root, (node) => {
-            if (node.isLeaf()) count++;
-        });
-        this._lineCount = count;
-        this._dirty = false;
+        this._refreshCounts();
         return this._lineCount;
     }
 
@@ -333,24 +349,62 @@ class MoveTree {
         let reviewed = 0;
         let mastered = 0;
         let due = 0;
+        let moveAttempts = 0;
+        let moveCorrect = 0;
+        let nextDue = null;
         const now = Date.now();
 
-        this._traverse(this.root, (node) => {
-            if (node === this.root) return;
-            totalNodes++;
-            if (node.isLeaf()) {
-                totalLines++;
-                if (node.stats.lastReviewed) {
-                    reviewed++;
-                    if (node.stats.streak >= 5) mastered++;
-                    if (node.stats.nextReview && node.stats.nextReview <= now) due++;
+        // Walk with an "effectively enabled" flag: a line is trainable only if
+        // no node on its path is disabled (mirrors Trainer._collectAllLines).
+        const walk = (node, active) => {
+            if (node !== this.root) {
+                totalNodes++;
+                moveAttempts += node.moveStats.attempts;
+                moveCorrect += node.moveStats.correct;
+                active = active && node.enabled;
+                if (node.isLeaf() && active) {
+                    totalLines++;
+                    if (node.stats.lastReviewed) {
+                        reviewed++;
+                        if (node.stats.streak >= 5) mastered++;
+                        if (node.stats.nextReview && node.stats.nextReview <= now) due++;
+                        else if (node.stats.nextReview && (nextDue === null || node.stats.nextReview < nextDue)) {
+                            nextDue = node.stats.nextReview;
+                        }
+                    }
                 }
             }
-        });
+            for (const [, child] of node.children) walk(child, active);
+        };
+        walk(this.root, true);
 
         const transpositions = this.countTranspositions();
+        const accuracy = moveAttempts > 0 ? Math.round(moveCorrect / moveAttempts * 100) : null;
 
-        return { totalNodes, totalLines, reviewed, mastered, due, transpositions };
+        return {
+            totalNodes, totalLines, reviewed, mastered, due, transpositions,
+            newLines: totalLines - reviewed,
+            accuracy,
+            nextDue
+        };
+    }
+
+    /**
+     * The player's least reliable moves (by per-move training accuracy).
+     * @param {number} limit
+     * @param {number} minAttempts - ignore moves seen fewer times than this
+     * @returns {Array<{node: MoveTreeNode, path: string[], accuracy: number, attempts: number}>}
+     */
+    getWeakestMoves(limit = 5, minAttempts = 2) {
+        const out = [];
+        this._traverse(this.root, (node) => {
+            const ms = node.moveStats;
+            if (node === this.root || ms.attempts < minAttempts) return;
+            const accuracy = Math.round(ms.correct / ms.attempts * 100);
+            if (accuracy < 100) out.push({ node, path: node.getPath(), accuracy, attempts: ms.attempts });
+        });
+        out.sort((a, b) => a.accuracy - b.accuracy || b.attempts - a.attempts);
+        return out.slice(0, limit);
     }
 
     _traverse(node, callback) {
@@ -402,6 +456,11 @@ class MoveTree {
      * Get accuracy percentage for a node (0-100 or null if no attempts).
      */
     static getNodeAccuracy(node) {
+        // Prefer per-move stats (how often the player finds this move);
+        // fall back to line-level stats on leaves trained before per-move
+        // tracking existed.
+        const ms = node.moveStats;
+        if (ms && ms.attempts > 0) return Math.round((ms.correct / ms.attempts) * 100);
         if (!node.stats || node.stats.attempts === 0) return null;
         return Math.round((node.stats.correct / node.stats.attempts) * 100);
     }
@@ -458,12 +517,15 @@ class MoveTree {
         if (node.move) obj.m = node.move;
         if (node.comment) obj.a = node.comment;
         if (node.nags.length > 0) obj.n = node.nags;
+        // Priority 0 (mainline) is the default on load, so only store non-zero.
         if (node.priority > 0) obj.p = node.priority;
         if (node.fen) obj.f = node.fen;
         if (node.isTransposition) obj.t = 1;
         if (!node.enabled) obj.e = 0;
         if (node.collapsed) obj.cl = 1;
-        if (node.stats.attempts > 0) {
+        // A line that was learned (shown once) has a schedule but no graded
+        // attempts yet — it must still be persisted.
+        if (node.stats.attempts > 0 || node.stats.lastReviewed) {
             obj.s = [
                 node.stats.attempts,
                 node.stats.correct,
@@ -472,6 +534,14 @@ class MoveTree {
                 node.stats.interval,
                 Math.round(node.stats.ease * 100) / 100,
                 node.stats.streak
+            ];
+        }
+        if (node.moveStats.attempts > 0) {
+            obj.ms = [
+                node.moveStats.attempts,
+                node.moveStats.correct,
+                node.moveStats.streak,
+                node.moveStats.lastSeen
             ];
         }
         if (node.children.size > 0) {
@@ -520,7 +590,10 @@ class MoveTree {
         if (!data || typeof data !== 'object') return;
         if (typeof data.a === 'string') node.comment = data.a;
         if (Array.isArray(data.n)) node.nags = data.n;
-        if (data.p !== undefined) node.priority = MoveTree._num(data.p, 0);
+        // Missing priority means mainline (0) — only non-zero is stored. Using
+        // the insertion index here instead would lose a "Set as Mainline"
+        // choice on reload whenever the mainline wasn't the first child.
+        node.priority = data.p !== undefined ? MoveTree._num(data.p, 0) : 0;
         if (typeof data.f === 'string') node.fen = data.f;
         if (data.t) node.isTransposition = true;
         if (data.e === 0) node.enabled = false;
@@ -541,6 +614,18 @@ class MoveTree {
                 node.stats.correct = node.stats.attempts;
             }
             if (node.stats.ease < 1.3) node.stats.ease = 1.3;
+        }
+        if (Array.isArray(data.ms)) {
+            const m = data.ms;
+            node.moveStats = {
+                attempts: Math.max(0, MoveTree._num(m[0], 0)),
+                correct: Math.max(0, MoveTree._num(m[1], 0)),
+                streak: Math.max(0, MoveTree._num(m[2], 0)),
+                lastSeen: m[3] != null ? MoveTree._num(m[3], null) : null
+            };
+            if (node.moveStats.correct > node.moveStats.attempts) {
+                node.moveStats.correct = node.moveStats.attempts;
+            }
         }
         if (data.c && typeof data.c === 'object') {
             for (const [moveSan, childData] of Object.entries(data.c)) {
